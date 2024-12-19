@@ -1,0 +1,6 @@
+imagesCluster/ 
+imagesGerard_handwritten/
+imagesGerard_printed/
+.venv/
+__pycache__/
+save_weights/
