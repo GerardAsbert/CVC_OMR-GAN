@@ -1,0 +1,8 @@
+GANWriting/__pycache__
+imagesCluster/
+imagesGerard_handwritten/
+imagesGerard_printed/
+log/
+loss_plots/
+models/
+save_weights/
