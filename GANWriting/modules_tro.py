@@ -155,7 +155,7 @@ def fine(label_list):
         return label_list
 
 def write_image(xg, pred_label, gt_img, gt_label, title, iter):
-    folder = '../../../../data/gasbert/imagesGerard_handwritten'
+    folder = '/data/gasbert/imagesGerard_handwritten'
     folder1 = folder + '/comparingImages'
     folder2 = folder + '/singleImages'
     if not os.path.exists(folder):

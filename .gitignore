@@ -4,3 +4,7 @@ imagesGerard_printed/
 .venv/
 __pycache__/
 save_weights/
+log/
+loss_plots/
+GANWriting/augmentorMarina.ipynb
+final_classifier_testing

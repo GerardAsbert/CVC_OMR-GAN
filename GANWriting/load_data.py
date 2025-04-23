@@ -124,11 +124,11 @@ class MusicSymbolDataset(Dataset):
 def loadData(directories=None, batch_size=128, num_workers=0, test_split_ratio=0.1):
     if directories is None:
         #directories = ['../Projecte_GANs/Datasets/Printed/deepscores_symbols_reduced'] #'./dataset1', './dataset2',
-        directories = ['../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/CapitanSymbols_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Fornes_Dataset_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/imatges_Homus_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Muscima_Symbols_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/bad_symbols']
+        directories = ['/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/CapitanSymbols_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Fornes_Dataset_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/imatges_Homus_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Muscima_Symbols_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/bad_symbols']
 
     dataset = MusicSymbolDataset(directories, TARGET_CLASSES)
 
@@ -151,11 +151,11 @@ def loadData(directories=None, batch_size=128, num_workers=0, test_split_ratio=0
 def loadData_imp(directories=None, batch_size=128, num_workers=0):
     if directories is None:
         #directories = ['../Projecte_GANs/Datasets/Printed/deepscores_symbols_reduced'] #'./dataset1', './dataset2',
-        directories = ['../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/CapitanSymbols_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Fornes_Dataset_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/imatges_Homus_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Muscima_Symbols_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/bad_symbols']
+        directories = ['/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/CapitanSymbols_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Fornes_Dataset_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/imatges_Homus_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Muscima_Symbols_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/bad_symbols']
 
     dataset = MusicSymbolDataset(directories, IMPORTANT_CLASSES)
         
@@ -171,7 +171,7 @@ def loadData_imp(directories=None, batch_size=128, num_workers=0):
 def loadData_sample(directories=None, batch_size=128, num_workers=0):
     if directories is None:
         #directories = ['../Projecte_GANs/Datasets/Printed/deepscores_symbols_reduced'] #'./dataset1', './dataset2',
-        directories = ['../Projecte_GANs/Datasets/Handwritten/generate_sample_dataset']
+        directories = ['/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/generate_sample_dataset']
 
     dataset = MusicSymbolDataset(directories, TARGET_CLASSES)
         
@@ -186,11 +186,11 @@ def loadData_sample(directories=None, batch_size=128, num_workers=0):
 def loadData_generate(directories=None, batch_size=128, num_workers=0):
     if directories is None:
         #directories = ['../Projecte_GANs/Datasets/Printed/deepscores_symbols_reduced'] #'./dataset1', './dataset2',
-        directories = ['../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/CapitanSymbols_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Fornes_Dataset_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/imatges_Homus_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Muscima_Symbols_rot_flip',
-                    '../Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/bad_symbols']
+        directories = ['/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/CapitanSymbols_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Fornes_Dataset_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/imatges_Homus_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/Muscima_Symbols_rot_flip',
+                    '/home/gasbert/Desktop/Projecte_GANs/Datasets/Handwritten/datasets_rot_flip/bad_symbols']
 
     dataset = MusicSymbolDataset(directories, TARGET_CLASSES, test=True)
 
