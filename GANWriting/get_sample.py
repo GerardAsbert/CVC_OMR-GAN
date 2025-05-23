@@ -16,8 +16,6 @@ os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-G
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 parser = argparse.ArgumentParser(description='seq2seq net', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('start_epoch', type=int, help='load saved weights from which epoch')
-args = parser.parse_args()
 
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 scaler = GradScaler()
@@ -45,7 +43,7 @@ def all_data_loader():
 
 def generate_sample_images(sample_loader):
     print(f"Device: {device}")
-    model_folder = "/home/gasbert/Desktop/GANGerard/save_weights"
+    model_folder = "/home/gasbert/Desktop/CVC_OMR-GAN/GANWriting/save_weights"
     for file in os.listdir(model_folder):
         if file.startswith("GAN") and file.endswith("model") and os.path.isfile(os.path.join(model_folder, file)):
             images = []

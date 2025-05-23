@@ -7,6 +7,7 @@ import torch.nn.functional as F
 from torch.amp import GradScaler
 import numpy as np
 import matplotlib
+import wandb
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import time
@@ -23,6 +24,10 @@ os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 parser = argparse.ArgumentParser(description='seq2seq net', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('start_epoch', type=int, help='load saved weights from which epoch')
+parser.add_argument('--lr_dis', type=int, default=1e-5, help='Discriminator learning rate')
+parser.add_argument('--lr_gen', type=int, default=1e-4, help='Generator learning rate')
+parser.add_argument('--lr_id', type=int, default=1e-5, help='Identifier learning rate')
+parser.add_argument('--exec_id', type=int, default=0, help='Identifier for the execution')
 args = parser.parse_args()
 
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
@@ -38,9 +43,9 @@ Bi_GRU = True
 VISUALIZE_TRAIN = True
 
 BATCH_SIZE = 16
-lr_dis = 1e-5
-lr_gen = 1e-4
-lr_rec = 1e-5
+lr_dis = args.lr_dis
+lr_gen = args.lr_gen
+lr_rec = args.lr_id
 top15_cosine_euclidean = []
 
 
@@ -85,9 +90,6 @@ def compute_ssim(img1, img2):
 
 def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, imp_loader):
     model.train()
-    loss_dis = list()
-    loss_dis_tr = list()
-    loss_rec = list()
 
     for i, train_data_list in enumerate(train_loader):
         tr_img, tr_label = train_data_list
@@ -115,6 +117,11 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, im
                     scaler.scale(l_rec_tr).backward(retain_graph=True)
                     scaler.step(rec_opt)
                     scaler.update()
+                    wandb.log({
+                        "epoch": epoch,
+                        "batch": i + (index_imp+1)/100,
+                        "identifier_loss (id_train)": l_rec_tr.cpu().item(),
+                    })
 
                 #dis update
                 dis_opt.zero_grad()
@@ -130,6 +137,15 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, im
                 scaler.step(gen_opt)
                 scaler.update()
 
+                wandb.log({
+                    "epoch": epoch,
+                    "batch": i + (index_imp+1)/100,
+                    "discriminator_loss (dis_train)": l_dis.cpu().item(),
+                    "identifier_loss (gen_train)": l_rec.cpu().item(),
+                    "discriminator_loss (gen_train)": l_dis_tr.cpu().item()
+                })
+
+
                 del l_total, l_dis, l_rec, l_dis_tr
                 torch.cuda.empty_cache()
 
@@ -140,6 +156,11 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, im
             scaler.scale(l_rec_tr).backward(retain_graph=True)
             scaler.step(rec_opt)
             scaler.update()
+            wandb.log({
+                "epoch": epoch,
+                "batch": i,
+                "identifier_loss (id_train)": l_rec_tr.cpu().item(),
+            })
 
         
         '''dis update'''
@@ -156,12 +177,14 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, im
         scaler.scale(l_total).backward(retain_graph=True)
         scaler.step(gen_opt)
         scaler.update()
-                
 
-        loss_dis.append(l_dis.cpu().item())
-        loss_dis_tr.append(l_dis_tr.cpu().item())
-        loss_rec.append(l_rec.cpu().item())
-        
+        wandb.log({
+            "epoch": epoch,
+            "batch": i,
+            "discriminator_loss (dis_train)": l_dis.cpu().item(),
+            "identifier_loss (gen_train)": l_rec.cpu().item(),
+            "discriminator_loss (gen_train)": l_dis_tr.cpu().item()
+        })        
 
         # Asegúrate de que los datos no tengan valores anómalos
         for data in train_data_list:
@@ -219,10 +242,19 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, im
         del l_total, l_dis, l_rec, l_dis_tr
         torch.cuda.empty_cache()
 
-    return loss_dis, loss_rec
-
 
 def main(train_loader, test_loader, imp_loader):
+    wandb.init(
+        project="CVC_OMR-GAN",
+        config={
+            "learning_rate_dis": lr_dis,
+            "learning_rate_gen": lr_gen,
+            "learning_rate_rec": lr_rec,
+            "batch_size": BATCH_SIZE,
+            "architecture": "GAN",
+        }
+    )
+
     print(f"Device: {device}")
     model = ConTranModel(show_iter_num, OOV, pretrained_rec=pretrained_rec).to(device)
     print(model)
@@ -242,21 +274,7 @@ def main(train_loader, test_loader, imp_loader):
     
     for epoch in range(CurriculumModelID, epochs):
         print("Epoch: " + str(epoch))
-        loss_dis, loss_rec = train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader=test_loader, imp_loader=imp_loader)
-
-        bundle_size = 50
-        new_loss_diss = [mean(loss_dis[i:i+bundle_size]) for i in range(0, len(loss_dis), bundle_size)]
-        new_loss_rec = [mean(loss_rec[i:i+bundle_size]) for i in range(0, len(loss_rec), bundle_size)]
-
-        #Save loss plots
-        plt.figure(figsize=(8,8))
-        plt.plot(new_loss_diss, '-b', label='Disc_loss')
-        plt.plot(new_loss_rec, '-g', label='Cla_loss')
-        plt.xlabel("n batch")
-        plt.legend(loc='upper left')
-        plt.title("Epoch: " + str(epoch) + " - Losses")
-        plt.savefig("loss_plots/Epoch" + str(epoch)+ "Losses.png")
-
+        train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader=test_loader, imp_loader=imp_loader)
         '''if epoch % MODEL_SAVE_EPOCH == 0:
             folder_weights = 'save_weights'
             if not os.path.exists(folder_weights):
