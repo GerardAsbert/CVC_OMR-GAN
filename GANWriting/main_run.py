@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import time
 import argparse
 from load_data import loadData as load_data_func, vocab_size, IMG_WIDTH, IMG_HEIGHT, loadData_imp
-from network_tro import ConTranModel
+from network_tro import ConTranModel, set_crit
 from loss_tro import CER
 from collections import Counter
 from statistics import mean
@@ -22,34 +22,27 @@ os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-G
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-parser = argparse.ArgumentParser(description='seq2seq net', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('start_epoch', type=int, help='load saved weights from which epoch')
-parser.add_argument('--lr_dis', type=int, default=1e-5, help='Discriminator learning rate')
-parser.add_argument('--lr_gen', type=int, default=1e-4, help='Generator learning rate')
-parser.add_argument('--lr_id', type=int, default=1e-5, help='Identifier learning rate')
-parser.add_argument('--exec_id', type=int, default=0, help='Identifier for the execution')
-args = parser.parse_args()
+
 
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 scaler = GradScaler()
 OOV = True
 pretrained_rec = False
 
-EARLY_STOP_EPOCH = None
+CurriculumModelID = 0
+
+
+#EARLY_STOP_EPOCH = args.early_stop_epoch
+EARLY_STOP_EPOCH = 3
 EVAL_EPOCH = 10
 show_iter_num = 1
-LABEL_SMOOTH = True
+#LABEL_SMOOTH = True
 Bi_GRU = True
 VISUALIZE_TRAIN = True
 
 BATCH_SIZE = 16
-lr_dis = args.lr_dis
-lr_gen = args.lr_gen
-lr_rec = args.lr_id
 top15_cosine_euclidean = []
 
-
-CurriculumModelID = args.start_epoch
 def all_data_loader():
     train_loader, test_loader = load_data_func()
     imp_loader = loadData_imp()
@@ -88,7 +81,7 @@ def compute_ssim(img1, img2):
 
     return ssim(img1, img2, channel_axis=-1, win_size=7, data_range=img1.max() - img1.min())
 
-def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, imp_loader):
+def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, imp_loader, run_id):
     model.train()
 
     for i, train_data_list in enumerate(train_loader):
@@ -142,7 +135,8 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, im
                     "batch": i + (index_imp+1)/100,
                     "discriminator_loss (dis_train)": l_dis.cpu().item(),
                     "identifier_loss (gen_train)": l_rec.cpu().item(),
-                    "discriminator_loss (gen_train)": l_dis_tr.cpu().item()
+                    "discriminator_loss (gen_train)": l_dis_tr.cpu().item(),
+                    "total_loss": l_total.cpu().item()
                 })
 
 
@@ -181,9 +175,10 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, im
         wandb.log({
             "epoch": epoch,
             "batch": i,
-            "discriminator_loss (dis_train)": l_dis.cpu().item(),
+            "discriminator_loss (gen_train)": l_dis.cpu().item(),
             "identifier_loss (gen_train)": l_rec.cpu().item(),
-            "discriminator_loss (gen_train)": l_dis_tr.cpu().item()
+            "discriminator_loss (dis_train)": l_dis_tr.cpu().item(),
+            "total_loss": l_total.cpu().item()
         })        
 
         # Asegúrate de que los datos no tengan valores anómalos
@@ -210,7 +205,10 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, im
         with torch.no_grad():
 
             if mean_cosine_sim != None:
-                folder_weights = 'save_weights'
+                model_folder = "/home/gasbert/Desktop/CVC_OMR-GAN/GANWriting/weights"
+                if not os.path.exists(model_folder):
+                    os.makedirs(model_folder)
+                folder_weights = os.path.join(model_folder, 'save_weights_run' + str(run_id))
                 if not os.path.exists(folder_weights):
                     os.makedirs(folder_weights)
                 
@@ -243,7 +241,10 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, im
         torch.cuda.empty_cache()
 
 
-def main(train_loader, test_loader, imp_loader):
+def main(train_loader, test_loader, imp_loader, lr_dis, lr_gen, lr_rec, run_id=0, loss_type="CE"):
+
+    set_crit(loss_type)
+
     wandb.init(
         project="CVC_OMR-GAN",
         config={
@@ -252,6 +253,8 @@ def main(train_loader, test_loader, imp_loader):
             "learning_rate_rec": lr_rec,
             "batch_size": BATCH_SIZE,
             "architecture": "GAN",
+            "run_id": run_id,
+            "loss_type": loss_type
         }
     )
 
@@ -271,10 +274,12 @@ def main(train_loader, test_loader, imp_loader):
     gen_opt = optim.Adam([p for p in gen_params if p.requires_grad], lr=lr_gen)
     rec_opt = optim.Adam([p for p in rec_params if p.requires_grad], lr=lr_rec)
     epochs = 50001
-    
+    if EARLY_STOP_EPOCH is not None:
+        epochs = EARLY_STOP_EPOCH
+
     for epoch in range(CurriculumModelID, epochs):
         print("Epoch: " + str(epoch))
-        train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader=test_loader, imp_loader=imp_loader)
+        train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader=test_loader, imp_loader=imp_loader, run_id=run_id)
         '''if epoch % MODEL_SAVE_EPOCH == 0:
             folder_weights = 'save_weights'
             if not os.path.exists(folder_weights):
@@ -291,8 +296,20 @@ def rm_old_model(index):
             os.system('rm save_weights/contran-' + str(epoch) + '.model')
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='seq2seq net', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('start_epoch', type=int, help='load saved weights from which epoch')
+    parser.add_argument('--lr_dis', type=int, default=1e-5, help='Discriminator learning rate')
+    parser.add_argument('--lr_gen', type=int, default=1e-4, help='Generator learning rate')
+    parser.add_argument('--lr_id', type=int, default=1e-5, help='Identifier learning rate')
+    parser.add_argument('--early_stop_epoch', type=int, default=None, help='Early stop epoch, if None, no early stopping')
+    args = parser.parse_args()
+
+    lr_dis = args.lr_dis
+    lr_gen = args.lr_gen
+    lr_rec = args.lr_id
+    CurriculumModelID = args.start_epoch
     print(f"Network_tro.py vocab_size: {vocab_size}")
     print(time.ctime())
     train_loader, test_loader, imp_loader = all_data_loader()
-    main(train_loader, test_loader, imp_loader)
+    main(train_loader, test_loader, imp_loader, lr_dis=lr_dis, lr_gen=lr_gen, lr_rec=lr_rec)
     print(time.ctime())

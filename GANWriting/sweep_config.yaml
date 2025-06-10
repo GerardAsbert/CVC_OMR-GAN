@@ -1,0 +1,20 @@
+method: bayes
+program: run_sweep.py
+metric:
+  name: total_loss
+  goal: minimize
+parameters:
+  lr_dis:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-3
+  lr_gen:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-3
+  lr_rec:
+    distribution: log_uniform_values
+    min: 1e-6
+    max: 1e-3
+  loss_type:
+    values: ["CE", "KL"]

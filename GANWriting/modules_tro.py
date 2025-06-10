@@ -446,6 +446,7 @@ class DisModel(nn.Module):
         resp_fake = self.forward(input_fake)
         fake_loss = self.bce(resp_fake, label)
         return fake_loss
+
     def gradient_penalty(self, real_data, generated_data, reduction_factor=0.3):   
         batch_size = real_data.size(0)
         epsilon = torch.rand(batch_size, 1, 1, 1).to(real_data.device)

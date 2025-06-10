@@ -35,15 +35,15 @@ lr_gen = 1e-4
 lr_rec = 1e-5
 top10_cosine_euclidean = []
 
-def all_data_loader():
+def sample_data_loader():
     sample_loader = loadData_sample()
     sample_loader = torch.utils.data.DataLoader(dataset=sample_loader.dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     return sample_loader
 
 
-def generate_sample_images(sample_loader):
+def generate_sample_images(sample_loader, run_id=0):
     print(f"Device: {device}")
-    model_folder = "/home/gasbert/Desktop/CVC_OMR-GAN/GANWriting/save_weights"
+    model_folder = "/home/gasbert/Desktop/CVC_OMR-GAN/GANWriting/weights/save_weights_run" + str(run_id)
     for file in os.listdir(model_folder):
         if file.startswith("GAN") and file.endswith("model") and os.path.isfile(os.path.join(model_folder, file)):
             images = []
@@ -74,6 +74,6 @@ if __name__ == '__main__':
     print(f"Network_tro.py vocab_size: {vocab_size}")
     start_time = time.ctime()
     print(start_time)
-    sample_loader = all_data_loader()
+    sample_loader = sample_data_loader()
     generate_sample_images(sample_loader)
     print(time.ctime() - start_time)

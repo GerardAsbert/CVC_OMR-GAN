@@ -3,7 +3,7 @@ import torch.nn.functional as F
 from torch import nn
 from load_data import loadData as load_data_func, vocab_size, IMG_WIDTH, IMG_HEIGHT
 from modules_tro import GenModel_FC, DisModel, RecModel_CNN as RecModel, write_image, augmentor, randomize_labels, write_image_cosine, return_image, write_final_images
-from loss_tro import crit, log_softmax
+from loss_tro import crit_CE, crit_KL, log_softmax
 import numpy as np
 import cv2
 import random
@@ -19,6 +19,14 @@ epsilon = 1e-6
 augmentorBool = False
 encoderType = 'base'
 decoderType = 'base'
+crit = crit_CE
+
+def set_crit(loss_type):
+    global crit
+    if loss_type == "KL":
+        crit = crit_KL
+    else:
+        crit = crit_CE
 
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 ssim_metric = ssim
@@ -209,7 +217,7 @@ class ConTranModel(nn.Module):
                     pred_xt = self.rec(generated_img, tr_label, img_width=torch.from_numpy(np.array([IMG_WIDTH] * batch_size)).to(device))
                     #pred_xt = self.rec(tr_img)
                     tr_img_nograd = tr_img.detach()
-                write_image(generated_img, pred_xt, tr_img_nograd, tr_label, 'epoch_' + str(epoch) + '-' + str(self.iter_num).zfill(7), self.iter_num)
+                #write_image(generated_img, pred_xt, tr_img_nograd, tr_label, 'epoch_' + str(epoch) + '-' + str(self.iter_num).zfill(7), self.iter_num)
             return l_total
         
         elif mode == 'rec_pretrain_train':

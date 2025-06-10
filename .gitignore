@@ -7,4 +7,7 @@ save_weights/
 log/
 loss_plots/
 GANWriting/augmentorMarina.ipynb
+GANWriting/wandb/
+wandb/
+GANWriting/weights/
 final_classifier_testing
