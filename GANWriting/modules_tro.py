@@ -312,18 +312,6 @@ def write_final_images(xg, pred_label, gt_img, gt_label, title, final_folder):
 
 
 def return_image(xg, pred_label, gt_img, gt_label, title, iter):
-    folder = '../../../../data/gasbert/imagesGerard_handwritten'
-    folder1 = folder + '/comparingImages'
-    folder2 = folder + '/singleImages'
-    if not os.path.exists(folder):
-        os.makedirs(folder)
-    if not os.path.exists(folder1):
-        os.makedirs(folder1)
-    if not os.path.exists(folder2):
-        os.makedirs(folder2)
-    for cat in TARGET_CLASSES:
-        if not os.path.exists(folder2 + "/" + cat):
-            os.makedirs(folder2 + "/" + cat)
     batch_size = gt_label.shape[0]
     gt_img = gt_img.cpu().numpy()
     xg = xg.cpu().numpy()

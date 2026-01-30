@@ -1,7 +1,7 @@
 import os
 import torch
 import torch.nn.functional as F
-from torch.amp import GradScaler
+from torch.cuda.amp import GradScaler
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')
@@ -11,7 +11,8 @@ from load_data import vocab_size, loadData_sample
 from network_tro import ConTranModel
 import cv2
 #os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-OMRGan/lib/python3.8/site-packages/cv2/qt/plugins"
-os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-GAN-OMR/plugins"
+#os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-GAN-OMR/plugins"
+os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/miniconda3/envs/music-symbol-gan/lib/python3.8/site-packages/cv2/qt/plugins"
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -43,7 +44,7 @@ def sample_data_loader():
 
 def generate_sample_images(sample_loader, run_id=0):
     print(f"Device: {device}")
-    model_folder = "/home/gasbert/Desktop/CVC_OMR-GAN/GANWriting/weights/save_weights_run" + str(run_id)
+    model_folder = "/data2/users/gasbert/music-symbol-GAN/results/weights/save_weights_run" + str(run_id)
     for file in os.listdir(model_folder):
         if file.startswith("GAN") and file.endswith("model") and os.path.isfile(os.path.join(model_folder, file)):
             images = []
