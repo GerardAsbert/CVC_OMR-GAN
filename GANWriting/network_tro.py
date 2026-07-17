@@ -8,6 +8,7 @@ import numpy as np
 import cv2
 import random
 from skimage.metrics import structural_similarity as ssim
+import wandb
 
 
 w_dis = 1.
@@ -79,7 +80,7 @@ class ConTranModel(nn.Module):
             tr_img_rec = tr_img_rec.requires_grad_()
             pred_xt_tr = self.rec(tr_img_rec, tr_label, img_width=torch.from_numpy(np.array([IMG_WIDTH]*batch_size)))
             l_rec_tr = crit(log_softmax(pred_xt_tr.reshape(-1,vocab_size)), tr_label.reshape(-1))
-            l_rec_tr.backward(retain_graph=True)
+
             return l_rec_tr
         
         elif mode == 'gen_update':
@@ -104,7 +105,6 @@ class ConTranModel(nn.Module):
 
             
             l_total = w_dis * l_dis + w_rec * l_rec
-            l_total.backward(retain_graph=True)
 
             '''# Add gradient clipping 
             torch.nn.utils.clip_grad_norm_(self.rec.parameters(), max_norm=1.0)
@@ -179,7 +179,7 @@ class ConTranModel(nn.Module):
                     print(mean_ssim)
                     print("SSIM VALUES: ")
                     print(ssim_values)
-                    write_image_cosine(generated_img, pred_xt, tr_img_nograd, tr_label, self.iter_num, mean_cosine_sim, mean_euclidean, mean_ssim)
+                    #write_image_cosine(generated_img, pred_xt, tr_img_nograd, tr_label, self.iter_num, mean_cosine_sim, mean_euclidean, mean_ssim)
                     
                     
 
@@ -188,30 +188,31 @@ class ConTranModel(nn.Module):
                 best_softmax = torch.max(log_softmax_pred_xt, dim=-1) 
                 tr_label_1dim = tr_label.squeeze(1)
                 
-                print("Pred classes: ")
-                print(pred_classes)
-                print("tr label: ")
-                print(tr_label_1dim)
-                print("---------------------------------")
                 
-            return l_total, l_dis, l_rec, mean_cosine_sim, mean_euclidean, mean_ssim
+            return (
+                l_total,
+                l_dis,
+                l_rec,
+                mean_cosine_sim,
+                mean_euclidean,
+                mean_ssim,
+                pred_classes.detach(),
+                tr_label_1dim.detach()
+            )
 
         elif mode == 'dis_update':
             sample_img = noisy_img
             sample_img.requires_grad_()
             l_real = self.dis.calc_dis_real_loss(sample_img)
-            l_real.backward(retain_graph=True)
 
             with torch.no_grad():
                 generated_img = self.gen(noisy_img, tr_label)
 
             l_fake = self.dis.calc_dis_fake_loss(generated_img)
-            l_fake.backward(retain_graph=True)
 
             gp = self.dis.gradient_penalty(sample_img, generated_img)
-            gp.backward(retain_graph=True)
 
-            l_total = l_real + l_fake
+            l_total = l_real + l_fake + gp
             if self.iter_num % self.show_iter_num == 0:
                 with torch.no_grad():
                     pred_xt = self.rec(generated_img, tr_label, img_width=torch.from_numpy(np.array([IMG_WIDTH] * batch_size)).to(device))
@@ -234,8 +235,6 @@ class ConTranModel(nn.Module):
                 
                 correct_predictions = (pred_classes == tr_label_1dim).float()  # Compare with ground truth
                 accuracy = correct_predictions.mean().item()
-                
-            l_rec.backward(retain_graph=True)
             
             return l_rec, accuracy
         
@@ -281,4 +280,7 @@ class ConTranModel(nn.Module):
                 image = return_image(generated_img, pred_xt, tr_img, tr_label, 'eval_' + str(epoch) + '-' + str(self.iter_num).zfill(7), self.iter_num)
                 self.iter_num += 1
             return image
+        
+    
+    
 

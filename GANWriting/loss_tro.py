@@ -31,7 +31,7 @@ class LabelSmoothing(torch.nn.Module):
 
 log_softmax = torch.nn.LogSoftmax(dim=-1)
 crit_KL = LabelSmoothing(vocab_size, 0.3)
-crit_CE = torch.nn.CrossEntropyLoss(label_smoothing=0.1)
+crit_CE = torch.nn.CrossEntropyLoss(label_smoothing=0.1, reduction='mean')
 
 def fine(label_list):
     if type(label_list) != type([]):
