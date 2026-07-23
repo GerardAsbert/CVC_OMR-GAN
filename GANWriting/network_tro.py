@@ -279,18 +279,20 @@ class ConTranModel(nn.Module):
                 pred_xt = self.rec(generated_img, tr_label, img_width=torch.from_numpy(np.array([IMG_WIDTH] * batch_size)).to(device))
                 #pred_xt = self.rec(tr_img)
                 title = 'eval-' + str(self.iter_num).zfill(7)
-                write_final_images(generated_img, pred_xt, tr_img, tr_label, title, final_folder)
+                # Reconstruction of every test instance (SNN inference step 1).
+                # Returns the per-class instance indices used in the filenames.
+                inst_ids = write_final_images(generated_img, pred_xt, tr_img, tr_label, title, final_folder)
 
-                # ── SNN-style new-sample generation ───────────────────────────
+                # ── SNN-style new-sample generation (SNN inference step 2) ────
                 # Save each sample's CLEAN latent, then decode n_jitter fresh-noise
                 # variants from it (the GAN analogue of the SNN's spike jitter).
                 if n_jitter and n_jitter > 0:
                     feat_xs = self.gen(noisy_img, tr_label, return_encoding=True)
-                    save_latents(feat_xs, tr_label, title, latent_folder)
+                    save_latents(feat_xs, tr_label, inst_ids, latent_folder)
                     for j in range(n_jitter):
                         jit_img = self.gen.generate_from_latent(
                             feat_xs, tr_label, noise_std=jitter_noise_std)
-                        write_jitter_images(jit_img, tr_label, title, jitter_folder, j)
+                        write_jitter_images(jit_img, tr_label, inst_ids, jitter_folder, j)
 
                 self.iter_num += 1
                 l_dis = self.dis.calc_gen_loss(generated_img)

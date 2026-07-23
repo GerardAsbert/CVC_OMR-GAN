@@ -14,8 +14,10 @@ import time
 import argparse
 from load_data import loadData_generate as load_data_func, vocab_size, IMG_WIDTH, IMG_HEIGHT, loadData_imp
 from network_tro import ConTranModel
+from modules_tro import reset_image_buffers, log_image_buffers
 from loss_tro import CER
 from PIL import Image
+import wandb
 #os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-OMRGan/lib/python3.8/site-packages/cv2/qt/plugins"
 os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-GAN-OMR/plugins"
 
@@ -39,17 +41,27 @@ GEN_CONFIG = {
     "lr_dis":           1e-5,
     "lr_gen":           1e-4,
     "lr_rec":           1e-5,
-    "models_to_use":    [0, 2, 4, 5, 7, 8],
+    "models_to_use":    [0],
     "shear_factor":     0.2,
     "bg_color":         "white",   # MUST match the padding used at training time
-    "final_folder":     '../../../../data/gasbert/imagesGerard_handwritten/finalImages',
 
     # SNN-style new-sample generation from saved latents
-    "n_jitter":         5,         # #new jittered samples per source image (0 disables)
+    "n_jitter":         3,         # #new jittered samples per source image (SNN uses 3; 0 disables)
     "jitter_noise_std": None,      # jitter noise level; None -> training-time w_noise
-    "latent_folder":    '../../../../data/gasbert/imagesGerard_handwritten/latents',
-    "jitter_folder":    '../../../../data/gasbert/imagesGerard_handwritten/newSamples',
+
+    # Output layout mirrors the SNN's inference_outputs/ tree:
+    #   <out_dir>/training_instances/<class>/inst_<n>.png
+    #   <out_dir>/new_jitter/<class>/inst_<n>_new_jitter_<j>.png
+    #   <out_dir>/latents/<class>/inst_<n>.npy
+    "out_dir":          '../../../../data/gasbert/imagesGerard_handwritten/inference_outputs',
+    "wandb_project":    "ICDAR_26_SNNs_GAN",
+    "wandb_prefix":     "inference",   # keys become "inference/training_instances", etc.
 }
+
+OUT_DIR       = GEN_CONFIG["out_dir"]
+FINAL_FOLDER  = os.path.join(OUT_DIR, "training_instances")
+JITTER_FOLDER = os.path.join(OUT_DIR, "new_jitter")
+LATENT_FOLDER = os.path.join(OUT_DIR, "latents")
 
 OOV             = GEN_CONFIG["oov"]
 pretrained_rec  = GEN_CONFIG["pretrained_rec"]
@@ -63,7 +75,6 @@ lr_gen          = GEN_CONFIG["lr_gen"]
 lr_rec          = GEN_CONFIG["lr_rec"]
 models_to_use   = GEN_CONFIG["models_to_use"]
 shear_factor    = GEN_CONFIG["shear_factor"]
-FINAL_FOLDER    = GEN_CONFIG["final_folder"]
 top15_cosine_euclidean = []
 
 
@@ -101,8 +112,8 @@ def generate_base_images(test_loader, epoch, modelFile_o_model):
             final_folder=FINAL_FOLDER,
             n_jitter=GEN_CONFIG["n_jitter"],
             jitter_noise_std=GEN_CONFIG["jitter_noise_std"],
-            latent_folder=GEN_CONFIG["latent_folder"],
-            jitter_folder=GEN_CONFIG["jitter_folder"],
+            latent_folder=LATENT_FOLDER,
+            jitter_folder=JITTER_FOLDER,
         )
 
         loss_dis.append(l_dis.cpu().item())
@@ -129,7 +140,8 @@ def augment_images(input_folder):
         symbol_folder = os.path.join(input_folder, symbol)
         for filename in os.listdir(symbol_folder):
             index = 1
-            if filename.lower().endswith('jpg'):
+            # images are now written as .png (SNN convention); .jpg kept for older runs
+            if filename.lower().endswith(('.png', '.jpg')):
                 # Load the image
                 image_path = os.path.join(symbol_folder, filename)
                 image = Image.open(image_path).convert('L')
@@ -196,6 +208,17 @@ def main(test_loader):
     model = ConTranModel(show_iter_num, OOV, pretrained_rec=pretrained_rec).to(device)
     print(model)
 
+    # wandb, handled exactly as the SNN's run_inference: if a run is already
+    # active reuse it (so inference lands in the training run under
+    # "inference/..."), otherwise own a fresh run and finish it before returning.
+    own_run = wandb.run is None
+    if own_run:
+        wandb.init(project=GEN_CONFIG["wandb_project"], job_type="inference",
+                   config=GEN_CONFIG)
+
+    # Clear accumulated wandb images / instance numbering for this pass.
+    reset_image_buffers()
+
     models_folder = "save_weights"
 
     for id in models_to_use:
@@ -216,9 +239,16 @@ def main(test_loader):
         print("Highest file: " + str(highest_file))
 
         l_dis_test, l_rec_test = generate_base_images(test_loader, 0, models_folder + "/" + highest_file)
-    
-    augment_images(models_folder)
+
+    # One wandb.log per category with the full image list, exactly as the SNN does:
+    # "inference/training_instances" and "inference/new_jitter".
+    log_image_buffers(prefix=GEN_CONFIG["wandb_prefix"])
+
+    augment_images(FINAL_FOLDER)
     print("All images generated! :D")
+
+    if own_run:
+        wandb.finish()
     
 
         

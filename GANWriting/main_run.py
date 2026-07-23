@@ -25,7 +25,7 @@ import time
 import argparse
 from tqdm import trange, tqdm
 
-from load_data import loadData as load_data_func, vocab_size, IMG_WIDTH, IMG_HEIGHT, loadData_imp
+from load_data import loadData as load_data_func, vocab_size, IMG_WIDTH, IMG_HEIGHT, loadData_imp, index2letter
 from network_tro import ConTranModel, set_crit, set_loss_weights
 from collections import Counter
 
@@ -62,6 +62,10 @@ DEFAULT_CONFIG = {
     # MSE-vs-images-seen learning curve (the fair SNN-vs-GAN artifact)
     "mse_log_every":           20,        # log per-batch reconstruction MSE every N batches
 
+    # image logging — same convention as the SNN (see _log_symbol_images_to_wandb)
+    "img_log_every":           100,       # batches between per-symbol image logs (SNN: every 100 iters)
+    "train_image_dir":         "train_outputs",   # end-of-training PNGs, like the SNN's output_dir
+
     # train-until-convergence (same idea/params as the SNN, in epoch units)
     "train_until_convergence": True,     # False -> run `epochs`; True -> stop on MSE plateau
     "convergence_eval_every":  1,         # epochs between full test-set MSE evals
@@ -80,8 +84,11 @@ show_iter_num   = DEFAULT_CONFIG["show_iter_num"]
 Bi_GRU          = DEFAULT_CONFIG["bi_gru"]
 VISUALIZE_TRAIN = DEFAULT_CONFIG["visualize_train"]
 MSE_LOG_EVERY   = DEFAULT_CONFIG["mse_log_every"]
+IMG_LOG_EVERY   = DEFAULT_CONFIG["img_log_every"]
 
 images_seen = 0            # cumulative training images seen (the SNN-comparison x-axis)
+global_step = 0            # cumulative batches (the SNN's "iter" for image logging)
+loss_history = []          # per-logged-batch image MSE, for the end-of-training loss curve
 top15_cosine_euclidean = []
 
 def all_data_loader(important_symbols=True):
@@ -163,7 +170,7 @@ def _full_test_mse(model, test_loader, seed):
 
 
 def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, run_id, imp_loader=None):
-    global images_seen
+    global images_seen, global_step
     model.train()
 
     for i, train_data_list in enumerate(tqdm(train_loader, desc=f"Epoch {epoch} Batches", unit="batch")):
@@ -300,11 +307,13 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, ru
         #    Count images from the main training path; log a per-batch
         #    reconstruction MSE every MSE_LOG_EVERY batches to bound overhead.
         images_seen += tr_img.size(0)
+        global_step += 1
         if (i % MSE_LOG_EVERY) == 0:
             with torch.no_grad():
                 base_model = model.module if isinstance(model, nn.DataParallel) else model
                 recon = base_model.gen(tr_img, tr_label)
                 batch_mse = float(((recon - tr_img) ** 2).mean().item())
+            loss_history.append(batch_mse)
             wandb.log({"curve/train_mse": batch_mse, "images_seen": images_seen})
 
         if i in (0, 20):
@@ -320,13 +329,10 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, ru
                 )
             })
 
-        if i == 0:
-            with torch.no_grad():
-                generated_img = model.module.gen(tr_img, tr_label) \
-                    if isinstance(model, torch.nn.DataParallel) \
-                    else model.gen(tr_img, tr_label)
-
-            log_first_batch_images_wandb(epoch, tr_img, generated_img)        
+        # Per-symbol target-vs-generated figures, same cadence and keys as the SNN
+        # (the SNN logs every 100 training iterations).
+        if (global_step % IMG_LOG_EVERY) == 0:
+            _log_symbol_images_to_wandb(model, tr_img, tr_label, global_step)
 
         # Asegúrate de que los datos no tengan valores anómalos
         for data in train_data_list:
@@ -496,6 +502,11 @@ def main(train_loader, test_loader, lr_dis, lr_gen, lr_rec, imp_loader=None, run
                 os.makedirs(folder_weights)
             torch.save(model.state_dict(), folder_weights + '/contran-%d.model' % epoch)'''
 
+    # End-of-training analysis (loss curve, val/img_mse, per-symbol PNGs), the
+    # same closing step the SNN performs.
+    analyze_and_plot(model, test_loader, DEFAULT_CONFIG["train_image_dir"],
+                     loss_history=loss_history)
+
 
 
 def rm_old_model(index):
@@ -506,20 +517,100 @@ def rm_old_model(index):
             os.system('rm save_weights/contran-' + str(epoch) + '.model')
 
 
-def log_first_batch_images_wandb(epoch, tr_img, generated_img, max_images=8):
-        images = []
-        for idx in range(min(max_images, tr_img.size(0))):
-            gt = tr_img[idx].detach().cpu().squeeze().numpy()
-            gen = generated_img[idx].detach().cpu().squeeze().numpy()
+# ── image logging, identical in form to the SNN's train.py ────────────────────
 
-            images.append(
-                wandb.Image(gt, caption=f"Epoch {epoch} | GT {idx}")
-            )
-            images.append(
-                wandb.Image(gen, caption=f"Epoch {epoch} | GEN {idx}")
-            )
+def _imshow_any(ax, im):
+    if im.ndim == 3:                       # (H, W, 3) colour
+        ax.imshow(np.clip(im, 0.0, 1.0))
+    else:                                  # (H, W) grayscale
+        ax.imshow(im, cmap="gray", vmin=0, vmax=1)
+    ax.axis("off")
 
-        wandb.log({f"samples/epoch_{epoch}_samples": images}, commit=False)
+
+def _imsave_any(path, im):
+    if im.ndim == 3:
+        plt.imsave(path, np.clip(im, 0.0, 1.0))
+    else:
+        plt.imsave(path, im, cmap="gray", vmin=0, vmax=1)
+
+
+def _log_symbol_images_to_wandb(model, tr_img, tr_label, step):
+    """One target-vs-generated figure per symbol, logged under a STABLE key
+    'images/<symbol>' so wandb shows each symbol's evolution over training —
+    the same convention (and figure layout, titles and cadence) as the SNN's
+    _log_character_images_to_wandb.
+
+    The SNN picks the last sequence of each unique symbol; here we pick the last
+    occurrence of each class present in the batch."""
+    base = model.module if isinstance(model, nn.DataParallel) else model
+    labels = tr_label.detach().cpu().numpy().reshape(-1)
+
+    with torch.no_grad():
+        gen_batch = base.gen(tr_img, tr_label)   # reconstruction with the TRUE label
+
+    for li in sorted(set(int(l) for l in labels)):
+        nombre_base = index2letter[li]
+        last_i = np.where(labels == li)[0][-1]
+
+        gen = gen_batch[last_i].detach().cpu().squeeze().numpy()
+        tgt = tr_img[last_i].detach().cpu().squeeze().numpy()
+        mse = float(np.mean((gen - tgt) ** 2))
+
+        fig, axes = plt.subplots(1, 2, figsize=(6, 3))
+        _imshow_any(axes[0], tgt); axes[0].set_title("target")
+        _imshow_any(axes[1], gen); axes[1].set_title("generated")
+        fig.suptitle(f"{nombre_base}  iter {step}  MSE:{mse:.4f}"); plt.tight_layout()
+        wandb.log({f"images/{nombre_base}": wandb.Image(fig)})
+        plt.close()
+
+
+def analyze_and_plot(model, test_loader, output_dir, loss_history=None):
+    """End-of-training analysis, mirroring the SNN's analyze_and_plot: the loss
+    curve as 'charts/loss_curve', the overall image MSE as 'val/img_mse', and one
+    target-vs-generated PNG per symbol (plus the bare generated image) on disk."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    if loss_history:
+        fig_loss = plt.figure()
+        plt.plot(range(1, len(loss_history) + 1), loss_history)
+        plt.xlabel("logged training batch"); plt.ylabel("image MSE loss")
+        plt.title("Training loss"); plt.tight_layout()
+        plt.savefig(f"{output_dir}/loss_training.png", dpi=300)
+        wandb.log({"charts/loss_curve": wandb.Image(fig_loss)})
+        plt.close()
+
+    mse_all = _full_test_mse(model, test_loader, seed=DEFAULT_CONFIG["convergence_eval_seed"])
+    print(f"Image MSE (all): {mse_all:.6f}")
+    wandb.log({"val/img_mse": mse_all})
+
+    # last occurrence of each symbol in the test set, as the SNN does
+    base = model.module if isinstance(model, nn.DataParallel) else model
+    was_training = model.training
+    model.eval()
+    best = {}
+    with torch.no_grad():
+        for tr_img, tr_label in test_loader:
+            tr_img = tr_img.to(device)
+            tr_label = tr_label.to(device)
+            gen_batch = base.gen(tr_img, tr_label)
+            labels = tr_label.detach().cpu().numpy().reshape(-1)
+            for i, li in enumerate(labels):
+                best[int(li)] = (tr_img[i].detach().cpu().squeeze().numpy(),
+                                 gen_batch[i].detach().cpu().squeeze().numpy())
+    if was_training:
+        model.train()
+
+    for li in sorted(best):
+        nombre_base = index2letter[li]
+        t, g = best[li]
+        mse = float(np.mean((g - t) ** 2))
+
+        fig, axes = plt.subplots(1, 2, figsize=(6, 3))
+        _imshow_any(axes[0], t); axes[0].set_title("target")
+        _imshow_any(axes[1], g); axes[1].set_title("generated")
+        fig.suptitle(f"{nombre_base}  MSE:{mse:.4f}"); plt.tight_layout()
+        plt.savefig(f"{output_dir}/{nombre_base}.png", dpi=300); plt.close()
+        _imsave_any(f"{output_dir}/{nombre_base}_gen.png", g)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='seq2seq net', formatter_class=argparse.ArgumentDefaultsHelpFormatter)

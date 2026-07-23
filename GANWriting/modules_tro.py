@@ -11,6 +11,10 @@ from recognizer.models.attention import locationAttention as rec_attention
 from load_data import IMG_HEIGHT, IMG_WIDTH, index2letter, tokens, onehotencoder, TARGET_CLASSES
 import cv2
 import random
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import wandb
 
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 
@@ -154,6 +158,80 @@ def fine(label_list):
     else:
         return label_list
 
+
+# ── SNN-style image saving / wandb logging ────────────────────────────────────
+# These mirror the SNN's inference.py helpers exactly so both models produce
+# byte-comparable artifacts: PNGs written on a FIXED [0, 1] grayscale scale
+# (never per-image min-max stretched, which would hide brightness differences)
+# and wandb images built from the same uint8 arrays as the saved PNGs.
+
+def _imshow_any(ax, im):
+    if im.ndim == 3:                       # (H, W, 3) colour
+        ax.imshow(np.clip(im, 0.0, 1.0))
+    else:                                  # (H, W) grayscale
+        ax.imshow(im, cmap="gray", vmin=0, vmax=1)
+    ax.axis("off")
+
+
+def _imsave_any(path, im):
+    if im.ndim == 3:
+        plt.imsave(path, np.clip(im, 0.0, 1.0))
+    else:
+        plt.imsave(path, im, cmap="gray", vmin=0, vmax=1)
+
+
+def save_gray(img, path):
+    """Identical to the SNN's inference.save_gray."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    if img.ndim == 3:                       # (H, W, 3) colour
+        plt.imsave(path, np.clip(img, 0.0, 1.0))
+    else:
+        plt.imsave(path, img, cmap="gray", vmin=0.0, vmax=1.0)
+
+
+def _wandb_img(arr, caption):
+    """Identical to the SNN's inference._img: same uint8 array as the saved PNG."""
+    arr = (np.clip(arr, 0.0, 1.0) * 255).astype(np.uint8)
+    return wandb.Image(arr, caption=caption)
+
+
+# The SNN emits ONE wandb.log per category with the whole list of images
+# ("inference/training_instances", "inference/new_jitter"). The GAN generates
+# batch by batch, so we accumulate here and flush once at the end.
+_WANDB_IMAGE_BUFFERS = {}
+_INSTANCE_COUNTER = {}
+
+
+def reset_image_buffers():
+    """Call before an inference pass: clears accumulated wandb images and the
+    per-class instance numbering used for filenames."""
+    _WANDB_IMAGE_BUFFERS.clear()
+    _INSTANCE_COUNTER.clear()
+
+
+def _buffer_image(category, img):
+    _WANDB_IMAGE_BUFFERS.setdefault(category, []).append(img)
+
+
+def log_image_buffers(prefix="inference"):
+    """Flush the buffers as the SNN does: one wandb.log per category, each with
+    the full list of images, under '<prefix>/<category>'."""
+    for category, images in _WANDB_IMAGE_BUFFERS.items():
+        key = f"{prefix}/{category}" if prefix else category
+        wandb.log({key: images})
+
+
+def _next_instance_ids(gt_label_np):
+    """Assign a running per-class instance index to each sample in a batch, so
+    filenames match the SNN's inst_<n> / new_jitter_<j> scheme without collisions."""
+    ids = []
+    for row in gt_label_np:
+        cls = _class_str(row)
+        n = _INSTANCE_COUNTER.get(cls, 0)
+        _INSTANCE_COUNTER[cls] = n + 1
+        ids.append(n)
+    return ids
+
 def write_image(xg, pred_label, gt_img, gt_label, title, iter):
     folder = '/data/gasbert/imagesGerard_handwritten'
     folder1 = folder + '/comparingImages'
@@ -273,41 +351,28 @@ def write_image_cosine(xg, pred_label, gt_img, gt_label, iter, mean_cosine, mean
         cv2.imwrite(folder1 + '/cosine_' + str(mean_cosine)[:5] + '-euclidean_' + str(mean_euclidean)[:5] + '-ssim_' + str(mean_ssim)[:6] + '.jpg', final_out)
 
 def write_final_images(xg, pred_label, gt_img, gt_label, title, final_folder):
-    if not os.path.exists(final_folder):
-        os.makedirs(final_folder)
-    for cat in TARGET_CLASSES:
-        if not os.path.exists(final_folder + "/" + cat):
-            os.makedirs(final_folder + "/" + cat)
-    batch_size = gt_label.shape[0]
-    gt_img = gt_img.cpu().numpy()
-    xg = xg.cpu().numpy()
-    gt_label = gt_label.cpu().numpy()
+    """Write the reconstruction of every test instance, exactly as the SNN's
+    inference step 1 does: <final_folder>/<class>/inst_<n>.png, saved with
+    save_gray on a FIXED [0, 1] scale, and buffered for a single wandb log under
+    'training_instances' with caption '<class>/inst_<n>'.
 
-    probs = nn.functional.softmax(pred_label, dim=1)
+    Returns the per-sample instance indices so the jitter images and latents of
+    the same batch can reuse them.
+    """
+    if final_folder is None:
+        return []
+    xg = xg.detach().cpu().numpy()
+    gt_label_np = gt_label.detach().cpu().numpy()
 
-    pred_label = torch.topk(probs, 1, dim=-1)[1].squeeze(-1)  # b,t,83 -> b,t,1 -> b,t
+    inst_ids = _next_instance_ids(gt_label_np)
 
-    pred_label = pred_label.cpu().numpy()
+    for i, n in enumerate(inst_ids):
+        cls = _class_str(gt_label_np[i])
+        g = xg[i].squeeze()   # already in [0, 1] from the generator's normalisation
+        save_gray(g, os.path.join(final_folder, cls, f"inst_{n}.png"))
+        _buffer_image("training_instances", _wandb_img(g, f"{cls}/inst_{n}"))
 
-    for i in range(batch_size):
-        gt = gt_img[i].squeeze()
-        tar = xg[i].squeeze()
-        gt = normalize(gt)
-        tar = normalize(tar)
-        gt_text = gt_label[i].tolist()
-        pred_text = pred_label[i].tolist()
-
-        gt_text = fine(gt_text)
-        pred_text = fine(pred_text)
-
-        '''for j in range(num_tokens):
-            gt_text = list(filter(lambda x: x != j, gt_text))
-            pred_text = list(filter(lambda x: x != j, pred_text))'''
-        
-        gt_text_str = ''.join([index2letter[c] for c in gt_text])
-
-        #Que no ho fagi amb les classes bad
-        cv2.imwrite(final_folder + '/' + gt_text_str  + '/' + title + '.jpg', tar)
+    return inst_ids
 
 
 def _class_str(gt_label_row):
@@ -315,37 +380,38 @@ def _class_str(gt_label_row):
     return ''.join([index2letter[c] for c in fine(gt_label_row.tolist())])
 
 
-def save_latents(feat_xs, gt_label, title, latent_folder):
+def save_latents(feat_xs, gt_label, inst_ids, latent_folder):
     """Save each sample's CLEAN latent (feat_xs, pre-noise) as .npy under
-    latent_folder/<class>/<title>_<i>.npy. These are the building blocks the SNN
-    calls 'style base': keeping them lets us regenerate new jittered samples later
-    without re-encoding the source image."""
+    latent_folder/<class>/inst_<n>.npy — the GAN's equivalent of the SNN bundle's
+    'style_base' building blocks, so new jittered samples can be regenerated
+    later without re-encoding the source image. `inst_ids` are the indices
+    assigned by write_final_images, keeping latents and images in step."""
     if latent_folder is None:
         return
-    os.makedirs(latent_folder, exist_ok=True)
     feats = feat_xs.detach().cpu().numpy()
     gt_label_np = gt_label.detach().cpu().numpy()
-    for i in range(feats.shape[0]):
+    for i, n in enumerate(inst_ids):
         cls = _class_str(gt_label_np[i])
         d = os.path.join(latent_folder, cls)
         os.makedirs(d, exist_ok=True)
-        np.save(os.path.join(d, f"{title}_{i}.npy"), feats[i])
+        np.save(os.path.join(d, f"inst_{n}.npy"), feats[i])
 
 
-def write_jitter_images(xg, gt_label, title, jitter_folder, jitter_idx):
-    """Write freshly-jittered generated images (the GAN analogue of the SNN's
-    new-jitter instances) to jitter_folder/<class>/<title>_<i>_jit<jitter_idx>.jpg."""
+def write_jitter_images(xg, gt_label, inst_ids, jitter_folder, jitter_idx):
+    """Write fresh-jitter instances exactly as the SNN's inference step 2 does:
+    <jitter_folder>/<class>/inst_<n>_new_jitter_<j>.png via save_gray on a fixed
+    [0, 1] scale, buffered for a single wandb log under 'new_jitter' with caption
+    '<class>/inst_<n> #<j>'. (The SNN has one source per author/symbol pair; the
+    GAN has one per test image, so inst_<n> disambiguates the source.)"""
     if jitter_folder is None:
         return
-    os.makedirs(jitter_folder, exist_ok=True)
-    for cat in TARGET_CLASSES:
-        os.makedirs(os.path.join(jitter_folder, cat), exist_ok=True)
     xg_np = xg.detach().cpu().numpy()
     gt_label_np = gt_label.detach().cpu().numpy()
-    for i in range(xg_np.shape[0]):
+    for i, n in enumerate(inst_ids):
         cls = _class_str(gt_label_np[i])
-        tar = normalize(xg_np[i].squeeze())
-        cv2.imwrite(os.path.join(jitter_folder, cls, f"{title}_{i}_jit{jitter_idx}.jpg"), tar)
+        g = xg_np[i].squeeze()   # already in [0, 1] from the generator's normalisation
+        save_gray(g, os.path.join(jitter_folder, cls, f"inst_{n}_new_jitter_{jitter_idx}.png"))
+        _buffer_image("new_jitter", _wandb_img(g, f"{cls}/inst_{n} #{jitter_idx}"))
 
 
 def return_image(xg, pred_label, gt_img, gt_label, title, iter):

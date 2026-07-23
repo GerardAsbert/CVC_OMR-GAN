@@ -40,7 +40,13 @@ tokens = {
         'timesig128', 'thirtytworest', 'sixtyfournoteup', 'flagup', 'flagdown', 
         'noteheadfull', 'stem', 'tie', 'accidentalsharpbad', 'gclefbad'})'''
 
-TARGET_CLASSES = sorted({'flag_up', 'flag_down', 'g_clef', 'notehead_empty', 'notehead_full', 'quarter_rest', 'sharp', 'stem'})
+'''TARGET_CLASSES = sorted({'flag_up', 'flag_down', 'g_clef', 'notehead_empty', 'notehead_full', 
+                            'quarter_rest', 'sharp', 'stem'})'''
+
+TARGET_CLASSES = sorted({'accidentalFlat', 'accidentalNatural', 'accidentalSharp', 'barlineSingle', 'beam', 'cClef',
+                         'fClef', 'flag16thDown', 'flag16thUp', 'flag8thDown', 'flag8thUp','gClef',
+                         'noteheadBlack','noteheadHalf', 'noteheadWhole',
+                         'rest8th', 'restHalf', 'restQuarter', 'restWhole', 'stem'})
 
 IMPORTANT_CLASSES = sorted({'accidentalsharp', 'gclef'})
 
@@ -148,7 +154,9 @@ class MusicSymbolDataset(Dataset):
 def loadData(directories=None, batch_size=128, num_workers=0, test_split_ratio=0.1, bg_color=BG_COLOR):
     if directories is None:
         #directories = ['../Projecte_GANs/Datasets/Printed/deepscores_symbols_reduced'] #'./dataset1', './dataset2',
-        directories = ['/data2/users/gasbert/SNN_ICDAR_2026/FINAL_HOMUS/full_dataset/offline']
+        directories = ['/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst/manuscript copy, copyist: I. B.',
+                       '/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst/manuscript copy, copyist: Zirnstein, Anton (19th century)',
+                       '/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst/manuscript copy, copyist: Schicht, Johann Gottfried (1753-1823)']
 
     dataset = MusicSymbolDataset(directories, TARGET_CLASSES, bg_color=bg_color)
 
