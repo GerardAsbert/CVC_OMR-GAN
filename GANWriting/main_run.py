@@ -4,10 +4,11 @@ os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/miniconda3/envs/music-symbol-gan/l
 #os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-GAN-OMR/plugins"
 #os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["CUDA_VISIBLE_DEVICES"] = '6,7'
+os.environ["CUDA_VISIBLE_DEVICES"] = '4'
 
 import torch
 import glob
+import itertools
 from torch import optim
 from skimage.metrics import structural_similarity as ssim
 import torch.nn.functional as F
@@ -25,37 +26,73 @@ import argparse
 from tqdm import trange, tqdm
 
 from load_data import loadData as load_data_func, vocab_size, IMG_WIDTH, IMG_HEIGHT, loadData_imp
-from network_tro import ConTranModel, set_crit
+from network_tro import ConTranModel, set_crit, set_loss_weights
 from collections import Counter
 
 
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 scaler = GradScaler()
-OOV = True
 pretrained_rec = False
 
 CurriculumModelID = 0
 
 
-#EARLY_STOP_EPOCH = args.early_stop_epoch
-EPOCHS = 100
-EVAL_EPOCH = 10
-show_iter_num = 1
-#LABEL_SMOOTH = True
-Bi_GRU = True
-VISUALIZE_TRAIN = True
+# ── central hyperparameter config ─────────────────────────────────────────────
+# Everything NOT exposed on argparse lives here, in the same spirit as the SNN's
+# DEFAULT_CONFIG, so there is a single source of truth.
+DEFAULT_CONFIG = {
+    # optimisation / schedule
+    "epochs":                  100,
+    "batch_size":              92,
+    "eval_epoch":              10,
+    "show_iter_num":           1,
+    "bi_gru":                  True,
+    "visualize_train":         True,
+    "oov":                     True,
 
-BATCH_SIZE = 92
+    # GAN loss weights (moved out of network_tro.py's module globals)
+    "w_dis":                   1.0,
+    "w_rec":                   2.5,
+    "w_noise":                 3.0,
+    "w_l1":                    0.0,
+
+    # dataset background / padding colour (mirrors the SNN's pad_color)
+    "bg_color":                "white",   # "white" -> pad 255, "black" -> pad 0
+
+    # MSE-vs-images-seen learning curve (the fair SNN-vs-GAN artifact)
+    "mse_log_every":           20,        # log per-batch reconstruction MSE every N batches
+
+    # train-until-convergence (same idea/params as the SNN, in epoch units)
+    "train_until_convergence": True,     # False -> run `epochs`; True -> stop on MSE plateau
+    "convergence_eval_every":  1,         # epochs between full test-set MSE evals
+    "convergence_patience":    10,        # #evals with no improvement (> min_delta) before stopping
+    "convergence_min_delta":   1e-9,      # min ABSOLUTE MSE drop that counts as an improvement
+    "convergence_max_epochs":  1000,      # hard safety cap on epochs in convergence mode
+    "convergence_eval_seed":   12345,     # fixed seed so the generator's eval noise is reproducible
+}
+
+# Derive the module-level names the rest of the file uses from the config.
+OOV             = DEFAULT_CONFIG["oov"]
+EPOCHS          = DEFAULT_CONFIG["epochs"]
+BATCH_SIZE      = DEFAULT_CONFIG["batch_size"]
+EVAL_EPOCH      = DEFAULT_CONFIG["eval_epoch"]
+show_iter_num   = DEFAULT_CONFIG["show_iter_num"]
+Bi_GRU          = DEFAULT_CONFIG["bi_gru"]
+VISUALIZE_TRAIN = DEFAULT_CONFIG["visualize_train"]
+MSE_LOG_EVERY   = DEFAULT_CONFIG["mse_log_every"]
+
+images_seen = 0            # cumulative training images seen (the SNN-comparison x-axis)
 top15_cosine_euclidean = []
 
 def all_data_loader(important_symbols=True):
-    train_loader, test_loader = load_data_func()
+    bg_color = DEFAULT_CONFIG["bg_color"]
+    train_loader, test_loader = load_data_func(bg_color=bg_color)
     train_loader = torch.utils.data.DataLoader(dataset=train_loader.dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
     test_loader = torch.utils.data.DataLoader(dataset=test_loader.dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     balance_data_loader(train_loader)
 
     if important_symbols:
-        imp_loader = loadData_imp()
+        imp_loader = loadData_imp(bg_color=bg_color)
         imp_loader = torch.utils.data.DataLoader(dataset=imp_loader.dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
         return train_loader, test_loader, imp_loader
     
@@ -91,7 +128,42 @@ def compute_ssim(img1, img2):
 
     return ssim(img1, img2, channel_axis=-1, win_size=7, data_range=img1.max() - img1.min())
 
+
+def _full_test_mse(model, test_loader, seed):
+    """Reconstruction MSE over the WHOLE test set: gen(img, true label) vs the
+    ground-truth image, averaged over all pixels. This is the fair learning-curve
+    metric (plotted vs images-seen) and the signal the convergence test watches —
+    the GAN analogue of the SNN's deterministic full-dataset MSE.
+
+    The generator injects latent noise, so we fix the RNG with `seed` (and restore
+    it afterwards) to make the metric a reproducible function of the weights."""
+    base = model.module if isinstance(model, nn.DataParallel) else model
+    was_training = model.training
+    model.eval()
+
+    cpu_rng = torch.get_rng_state()
+    cuda_rng = torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+    torch.manual_seed(seed)
+
+    se_sum, count = 0.0, 0
+    with torch.no_grad():
+        for tr_img, tr_label in test_loader:
+            tr_img = tr_img.to(device)
+            tr_label = tr_label.to(device)
+            gen_img = base.gen(tr_img, tr_label)
+            se_sum += float(((gen_img - tr_img) ** 2).sum().item())
+            count += tr_img.numel()
+
+    torch.set_rng_state(cpu_rng)
+    if cuda_rng is not None:
+        torch.cuda.set_rng_state_all(cuda_rng)
+    if was_training:
+        model.train()
+    return se_sum / max(1, count)
+
+
 def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, run_id, imp_loader=None):
+    global images_seen
     model.train()
 
     for i, train_data_list in enumerate(tqdm(train_loader, desc=f"Epoch {epoch} Batches", unit="batch")):
@@ -224,6 +296,17 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, ru
             "total_loss": l_total.cpu().item()
         })
 
+        # ── MSE vs images-seen: the fair learning-curve axis shared with the SNN.
+        #    Count images from the main training path; log a per-batch
+        #    reconstruction MSE every MSE_LOG_EVERY batches to bound overhead.
+        images_seen += tr_img.size(0)
+        if (i % MSE_LOG_EVERY) == 0:
+            with torch.no_grad():
+                base_model = model.module if isinstance(model, nn.DataParallel) else model
+                recon = base_model.gen(tr_img, tr_label)
+                batch_mse = float(((recon - tr_img) ** 2).mean().item())
+            wandb.log({"curve/train_mse": batch_mse, "images_seen": images_seen})
+
         if i in (0, 20):
             wandb.log({
                 f"predictions/epoch_{epoch}/batch_{i}_pred_vs_gt": wandb.Table(
@@ -310,20 +393,28 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, ru
 def main(train_loader, test_loader, lr_dis, lr_gen, lr_rec, imp_loader=None, run_id=0, loss_type="CE", multi_gpu=True):
 
     set_crit(loss_type)
+    # Drive the GAN loss weights from the central config. Must run BEFORE the
+    # model is built, since w_noise is read in GenModel_FC's constructor.
+    set_loss_weights(DEFAULT_CONFIG["w_dis"], DEFAULT_CONFIG["w_rec"],
+                     DEFAULT_CONFIG["w_noise"], DEFAULT_CONFIG["w_l1"])
 
-    wandb.init(
-        project="ICDAR_26_SNNs_GAN",
-        config={
-            "learning_rate_dis": lr_dis,
-            "learning_rate_gen": lr_gen,
-            "learning_rate_rec": lr_rec,
-            "batch_size": BATCH_SIZE,
-            "architecture": "GAN",
-            "run_id": run_id,
-            "loss_type": loss_type
-        }
-    )
-    
+    run_config = {
+        **DEFAULT_CONFIG,
+        "learning_rate_dis": lr_dis,
+        "learning_rate_gen": lr_gen,
+        "learning_rate_rec": lr_rec,
+        "architecture": "GAN",
+        "run_id": run_id,
+        "loss_type": loss_type,
+    }
+    wandb.init(project="ICDAR_26_SNNs_GAN", config=run_config)
+
+    # Log the learning curve against images-seen (not the wandb step), so it is
+    # directly comparable to the SNN's curve.
+    wandb.define_metric("images_seen")
+    wandb.define_metric("curve/train_mse", step_metric="images_seen")
+    wandb.define_metric("curve/eval_mse",  step_metric="images_seen")
+
     print(f"Device: {device}")
     model = ConTranModel(show_iter_num, OOV, pretrained_rec=pretrained_rec)
 
@@ -348,9 +439,57 @@ def main(train_loader, test_loader, lr_dis, lr_gen, lr_rec, imp_loader=None, run
     gen_opt = optim.Adam([p for p in gen_params if p.requires_grad], lr=lr_gen)
     rec_opt = optim.Adam([p for p in rec_params if p.requires_grad], lr=lr_rec)
 
-    for epoch in trange(CurriculumModelID, EPOCHS, desc="Training Epochs", unit="epoch"):
+    # ── epoch schedule: run a fixed number of epochs, or keep going until the
+    #    test MSE plateaus (capped by convergence_max_epochs), mirroring the SNN.
+    train_until_convergence = DEFAULT_CONFIG["train_until_convergence"]
+    conv_eval_every = DEFAULT_CONFIG["convergence_eval_every"]
+    conv_patience   = DEFAULT_CONFIG["convergence_patience"]
+    conv_min_delta  = DEFAULT_CONFIG["convergence_min_delta"]
+    conv_max_epochs = DEFAULT_CONFIG["convergence_max_epochs"]
+    conv_seed       = DEFAULT_CONFIG["convergence_eval_seed"]
+
+    best_mse, n_bad_evals = float("inf"), 0
+
+    if train_until_convergence:
+        epoch_iter = itertools.count(CurriculumModelID)
+        print(f"[convergence] training until test-MSE plateaus: patience={conv_patience} "
+              f"evals @ every {conv_eval_every} epoch(s), min_delta={conv_min_delta}, "
+              f"max_epochs={conv_max_epochs}")
+    else:
+        epoch_iter = trange(CurriculumModelID, EPOCHS, desc="Training Epochs", unit="epoch")
+
+    for epoch in epoch_iter:
+        if train_until_convergence and epoch >= conv_max_epochs:
+            print(f"[convergence] hit max_epochs={conv_max_epochs}; stopping.")
+            break
+
         print("Epoch: " + str(epoch))
         train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader=test_loader, run_id=run_id, imp_loader=imp_loader)
+
+        # Deterministic full test-set reconstruction MSE — the fair learning-curve
+        # point and the convergence signal. Logged in BOTH modes so the curve
+        # always exists; only used for early stopping when enabled.
+        if ((epoch + 1) % conv_eval_every) == 0:
+            eval_mse = _full_test_mse(model, test_loader, seed=conv_seed)
+            wandb.log({"curve/eval_mse": eval_mse, "images_seen": images_seen})
+            print(f"  [eval] epoch {epoch}  test recon MSE = {eval_mse:.6f}")
+
+            if train_until_convergence:
+                if eval_mse < best_mse - conv_min_delta:
+                    best_mse, n_bad_evals = eval_mse, 0
+                else:
+                    n_bad_evals += 1
+                    print(f"  [convergence] no improvement ({n_bad_evals}/{conv_patience})  "
+                          f"eval_mse={eval_mse:.6f}  best={best_mse:.6f}")
+                    if n_bad_evals >= conv_patience:
+                        print(f"[convergence] test MSE plateaued for {conv_patience} evals — "
+                              f"stopping at epoch {epoch}, images_seen={images_seen}, "
+                              f"best_mse={best_mse:.6f}.")
+                        wandb.log({"convergence/stopped_epoch": epoch,
+                                   "convergence/stopped_images_seen": images_seen,
+                                   "convergence/best_mse": best_mse})
+                        break
+
         '''if epoch % MODEL_SAVE_EPOCH == 0:
             folder_weights = 'save_weights'
             if not os.path.exists(folder_weights):

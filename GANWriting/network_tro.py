@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from load_data import loadData as load_data_func, vocab_size, IMG_WIDTH, IMG_HEIGHT
-from modules_tro import GenModel_FC, DisModel, RecModel_CNN as RecModel, write_image, augmentor, randomize_labels, write_image_cosine, return_image, write_final_images
+from modules_tro import GenModel_FC, DisModel, RecModel_CNN as RecModel, write_image, augmentor, randomize_labels, write_image_cosine, return_image, write_final_images, save_latents, write_jitter_images
 from loss_tro import crit_CE, crit_KL, log_softmax
 import numpy as np
 import cv2
@@ -29,6 +29,21 @@ def set_crit(loss_type):
     else:
         crit = crit_CE
 
+
+def set_loss_weights(w_dis_=None, w_rec_=None, w_noise_=None, w_l1_=None):
+    """Override the module-level loss weights from a central config.
+    NOTE: w_noise is read when GenModel_FC is constructed, so call this BEFORE
+    building ConTranModel for the noise level to take effect."""
+    global w_dis, w_rec, w_noise, w_l1
+    if w_dis_ is not None:
+        w_dis = w_dis_
+    if w_rec_ is not None:
+        w_rec = w_rec_
+    if w_noise_ is not None:
+        w_noise = w_noise_
+    if w_l1_ is not None:
+        w_l1 = w_l1_
+
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 ssim_metric = ssim
 
@@ -45,7 +60,8 @@ class ConTranModel(nn.Module):
             self.load_state_dict(torch.load(pretrained_gan))
             self.eval()
 
-    def forward(self, train_data_list, epoch, mode, cer_func=None, final_folder=None):
+    def forward(self, train_data_list, epoch, mode, cer_func=None, final_folder=None,
+                n_jitter=0, jitter_noise_std=None, latent_folder=None, jitter_folder=None):
         tr_img, tr_label = train_data_list
         noisy_img = tr_img.clone()
         batch_size = tr_img.shape[0]
@@ -262,7 +278,20 @@ class ConTranModel(nn.Module):
                 generated_img = self.gen(noisy_img, tr_label)
                 pred_xt = self.rec(generated_img, tr_label, img_width=torch.from_numpy(np.array([IMG_WIDTH] * batch_size)).to(device))
                 #pred_xt = self.rec(tr_img)
-                write_final_images(generated_img, pred_xt, tr_img, tr_label, 'eval-' + str(self.iter_num).zfill(7), final_folder)
+                title = 'eval-' + str(self.iter_num).zfill(7)
+                write_final_images(generated_img, pred_xt, tr_img, tr_label, title, final_folder)
+
+                # ── SNN-style new-sample generation ───────────────────────────
+                # Save each sample's CLEAN latent, then decode n_jitter fresh-noise
+                # variants from it (the GAN analogue of the SNN's spike jitter).
+                if n_jitter and n_jitter > 0:
+                    feat_xs = self.gen(noisy_img, tr_label, return_encoding=True)
+                    save_latents(feat_xs, tr_label, title, latent_folder)
+                    for j in range(n_jitter):
+                        jit_img = self.gen.generate_from_latent(
+                            feat_xs, tr_label, noise_std=jitter_noise_std)
+                        write_jitter_images(jit_img, tr_label, title, jitter_folder, j)
+
                 self.iter_num += 1
                 l_dis = self.dis.calc_gen_loss(generated_img)
                 l_rec = crit(log_softmax(pred_xt.reshape(-1, vocab_size)), tr_label.reshape(-1))
@@ -280,7 +309,3 @@ class ConTranModel(nn.Module):
                 image = return_image(generated_img, pred_xt, tr_img, tr_label, 'eval_' + str(epoch) + '-' + str(self.iter_num).zfill(7), self.iter_num)
                 self.iter_num += 1
             return image
-        
-    
-    
-

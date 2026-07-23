@@ -64,11 +64,35 @@ NUM_CHANNEL = 3
 
 print(f"vocab_size: {vocab_size}")
 
+
+# ── background / padding colour (mirrors the SNN's pad_color) ──────────────────
+# The dataset background colour decides the fill used when padding a non-square
+# symbol to a square canvas before resizing, exactly like the SNN pipeline.
+BG_COLOR = 'white'   # 'white' -> pad with 255, 'black' -> pad with 0
+
+
+def _bg_fill(bg_color):
+    """PIL grayscale fill for the given background colour name."""
+    bg = str(bg_color).lower()
+    assert bg in ('black', 'white'), f"bg_color must be 'black' or 'white', got {bg_color!r}"
+    return 255 if bg == 'white' else 0
+
+
+def _pad_to_square(img, fill):
+    """Pad a PIL 'L' image to a square canvas with `fill`, centred (SNN-style)."""
+    w, h = img.size
+    s = max(w, h)
+    canvas = Image.new('L', (s, s), fill)
+    canvas.paste(img, ((s - w) // 2, (s - h) // 2))
+    return canvas
+
+
 class MusicSymbolDataset(Dataset):
-    def __init__(self, data_dirs, target_classes, transform=None, test=False):
+    def __init__(self, data_dirs, target_classes, transform=None, test=False, bg_color=BG_COLOR):
         global tokens
         self.data_dirs = data_dirs
         self.target_classes = target_classes
+        self.pad_fill = _bg_fill(bg_color)   # square-padding fill from background colour
         self.transform = transform or transforms.Compose([
             transforms.Resize((IMG_HEIGHT, IMG_WIDTH)),
             transforms.Grayscale(num_output_channels=1),
@@ -117,15 +141,16 @@ class MusicSymbolDataset(Dataset):
     def __getitem__(self, idx):
         img_path, label = self.data[idx]
         image = Image.open(img_path).convert('L')
+        image = _pad_to_square(image, self.pad_fill)   # square-pad with bg colour, then resize
         image = self.transform(image)
         return image, label
 
-def loadData(directories=None, batch_size=128, num_workers=0, test_split_ratio=0.1):
+def loadData(directories=None, batch_size=128, num_workers=0, test_split_ratio=0.1, bg_color=BG_COLOR):
     if directories is None:
         #directories = ['../Projecte_GANs/Datasets/Printed/deepscores_symbols_reduced'] #'./dataset1', './dataset2',
         directories = ['/data2/users/gasbert/SNN_ICDAR_2026/FINAL_HOMUS/full_dataset/offline']
 
-    dataset = MusicSymbolDataset(directories, TARGET_CLASSES)
+    dataset = MusicSymbolDataset(directories, TARGET_CLASSES, bg_color=bg_color)
 
     if len(dataset) == 0:
         raise ValueError("El dataset está vacío")
@@ -143,7 +168,7 @@ def loadData(directories=None, batch_size=128, num_workers=0, test_split_ratio=0
     return train_loader, test_loader
 
 
-def loadData_imp(directories=None, batch_size=128, num_workers=0):
+def loadData_imp(directories=None, batch_size=128, num_workers=0, bg_color=BG_COLOR):
     if directories is None:
         #directories = ['../Projecte_GANs/Datasets/Printed/deepscores_symbols_reduced'] #'./dataset1', './dataset2',
         directories = ['/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/datasets_rot_flip/CapitanSymbols_rot_flip',
@@ -152,7 +177,7 @@ def loadData_imp(directories=None, batch_size=128, num_workers=0):
                     '/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/datasets_rot_flip/Muscima_Symbols_rot_flip',
                     '/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/datasets_rot_flip/bad_symbols']
 
-    dataset = MusicSymbolDataset(directories, IMPORTANT_CLASSES)
+    dataset = MusicSymbolDataset(directories, IMPORTANT_CLASSES, bg_color=bg_color)
         
     if len(dataset) == 0:
         raise ValueError("El dataset está vacío")
@@ -163,12 +188,12 @@ def loadData_imp(directories=None, batch_size=128, num_workers=0):
     return imp_loader
 
 
-def loadData_sample(directories=None, batch_size=128, num_workers=0):
+def loadData_sample(directories=None, batch_size=128, num_workers=0, bg_color=BG_COLOR):
     if directories is None:
         #directories = ['../Projecte_GANs/Datasets/Printed/deepscores_symbols_reduced'] #'./dataset1', './dataset2',
         directories = ['/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/generate_sample_dataset']
 
-    dataset = MusicSymbolDataset(directories, TARGET_CLASSES)
+    dataset = MusicSymbolDataset(directories, TARGET_CLASSES, bg_color=bg_color)
         
     if len(dataset) == 0:
         raise ValueError("El dataset está vacío")
@@ -178,7 +203,7 @@ def loadData_sample(directories=None, batch_size=128, num_workers=0):
     
     return imp_loader
 
-def loadData_generate(directories=None, batch_size=128, num_workers=0):
+def loadData_generate(directories=None, batch_size=128, num_workers=0, bg_color=BG_COLOR):
     if directories is None:
         #directories = ['../Projecte_GANs/Datasets/Printed/deepscores_symbols_reduced'] #'./dataset1', './dataset2',
         directories = ['/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/datasets_rot_flip/CapitanSymbols_rot_flip',
@@ -187,7 +212,7 @@ def loadData_generate(directories=None, batch_size=128, num_workers=0):
                     '/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/datasets_rot_flip/Muscima_Symbols_rot_flip',
                     '/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/datasets_rot_flip/bad_symbols']
 
-    dataset = MusicSymbolDataset(directories, TARGET_CLASSES, test=True)
+    dataset = MusicSymbolDataset(directories, TARGET_CLASSES, test=True, bg_color=bg_color)
 
     if len(dataset) == 0:
         raise ValueError("El dataset está vacío")

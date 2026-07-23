@@ -310,6 +310,43 @@ def write_final_images(xg, pred_label, gt_img, gt_label, title, final_folder):
         cv2.imwrite(final_folder + '/' + gt_text_str  + '/' + title + '.jpg', tar)
 
 
+def _class_str(gt_label_row):
+    """Map one ground-truth label entry (scalar or 1-elem array) to its class string."""
+    return ''.join([index2letter[c] for c in fine(gt_label_row.tolist())])
+
+
+def save_latents(feat_xs, gt_label, title, latent_folder):
+    """Save each sample's CLEAN latent (feat_xs, pre-noise) as .npy under
+    latent_folder/<class>/<title>_<i>.npy. These are the building blocks the SNN
+    calls 'style base': keeping them lets us regenerate new jittered samples later
+    without re-encoding the source image."""
+    if latent_folder is None:
+        return
+    os.makedirs(latent_folder, exist_ok=True)
+    feats = feat_xs.detach().cpu().numpy()
+    gt_label_np = gt_label.detach().cpu().numpy()
+    for i in range(feats.shape[0]):
+        cls = _class_str(gt_label_np[i])
+        d = os.path.join(latent_folder, cls)
+        os.makedirs(d, exist_ok=True)
+        np.save(os.path.join(d, f"{title}_{i}.npy"), feats[i])
+
+
+def write_jitter_images(xg, gt_label, title, jitter_folder, jitter_idx):
+    """Write freshly-jittered generated images (the GAN analogue of the SNN's
+    new-jitter instances) to jitter_folder/<class>/<title>_<i>_jit<jitter_idx>.jpg."""
+    if jitter_folder is None:
+        return
+    os.makedirs(jitter_folder, exist_ok=True)
+    for cat in TARGET_CLASSES:
+        os.makedirs(os.path.join(jitter_folder, cat), exist_ok=True)
+    xg_np = xg.detach().cpu().numpy()
+    gt_label_np = gt_label.detach().cpu().numpy()
+    for i in range(xg_np.shape[0]):
+        cls = _class_str(gt_label_np[i])
+        tar = normalize(xg_np[i].squeeze())
+        cv2.imwrite(os.path.join(jitter_folder, cls, f"{title}_{i}_jit{jitter_idx}.jpg"), tar)
+
 
 def return_image(xg, pred_label, gt_img, gt_label, title, iter):
     batch_size = gt_label.shape[0]
@@ -474,50 +511,58 @@ class GenModel_FC(nn.Module):
         images = self.dec(content)
         return images
 
-    def forward(self, img, label, return_encoding=False):
-        feat_xs = self.enc_image(img.to(device))  # Codifica la imagen de entrada
-        #print(f"Encoded features shape: {feat_xs.shape}")
-        if return_encoding:
-            return feat_xs
-        #Add random noise to encoded representation of the image
-        noise = torch.randn_like(feat_xs).to(device) * self.noise_std
-        feat_xs_noisy = feat_xs + noise
-
-        # Add label to generator decoder input
-        # Change when increasing the number of categories
+    def _label_planes(self, label):
+        """Build the (B, n_classes, 4, 4) one-hot label planes concatenated to the
+        latent before decoding. Identical to the original inline logic."""
         shp = list(label.shape)
         lst = []
         if(len(shp) == 1):
-            #values = torch.tensor([int(label[0]), int(label[1]), int(label[2]), int(label[3])]).view(4, 1, 1, 1)
             for clss in label:
                 tensor = torch.full((len(TARGET_CLASSES), 4, 4), 0.)
                 tensor[clss] = torch.full((4, 4), 1.)
                 lst.append(tensor)
-            
         elif(len(shp) == 2):
-            #values = torch.tensor([int(label[0][0]), int(label[1][0]), int(label[2][0]), int(label[3][0])]).view(4, 1, 1, 1)
             for clss in label:
                 tensor = torch.full((len(TARGET_CLASSES), 4, 4), 0.)
                 tensor[clss[0]] = torch.full((4, 4), 1.)
                 lst.append(tensor)
-        
-        # Concatenate the tensors along a new dimension (0) to form a 4xNCLASSESx4x4 tensor
-        result = torch.stack(lst, dim=0).to(device)      
+        # Concatenate along a new dimension (0) -> (B, n_classes, 4, 4)
+        return torch.stack(lst, dim=0).to(device)
 
-        #additional_feature = values.expand(-1, 15, 4, 4).to(device)
+    def _decode_normalized(self, feat_xs_noisy, label):
+        """Concatenate label planes, decode, and per-image min-max normalise to
+        [0, 1]. Shared by forward() and generate_from_latent() so the two paths
+        are guaranteed identical except for the noise that gets injected."""
+        result = self._label_planes(label)
         new_tensor = torch.cat((feat_xs_noisy, result), dim=1)
+        generated_img = self.decode(new_tensor)   # Decodifica para generar la imagen
 
-        #print(f"New tensor shape: {new_tensor.shape}")
-        generated_img = self.decode(new_tensor)  # Decodifica para generar la imagen
-        #print(f"Generated image shape: {generated_img.shape}")
-
-        min_vals = torch.amin(generated_img, dim=(2, 3), keepdim=True)  # Shape: [B, C, 1, 1]
-        max_vals = torch.amax(generated_img, dim=(2, 3), keepdim=True)  # Shape: [B, C, 1, 1]
-        
+        min_vals = torch.amin(generated_img, dim=(2, 3), keepdim=True)  # [B, C, 1, 1]
+        max_vals = torch.amax(generated_img, dim=(2, 3), keepdim=True)  # [B, C, 1, 1]
         # Avoid division by zero by adding a small epsilon
         generated_img = (generated_img - min_vals) / (max_vals - min_vals + 1e-8)
-
         return generated_img
+
+    def forward(self, img, label, return_encoding=False):
+        feat_xs = self.enc_image(img.to(device))  # Codifica la imagen de entrada
+        if return_encoding:
+            return feat_xs                          # CLEAN latent (pre-noise) — saved at inference
+        # Add random noise to the encoded representation of the image
+        noise = torch.randn_like(feat_xs).to(device) * self.noise_std
+        feat_xs_noisy = feat_xs + noise
+        return self._decode_normalized(feat_xs_noisy, label)
+
+    def generate_from_latent(self, feat_xs, label, noise_std=None):
+        """Decode a NEW sample from a SAVED latent by injecting fresh Gaussian
+        noise — the GAN analogue of the SNN's spike jitter. The clean latent
+        feat_xs (what forward(..., return_encoding=True) returns) is held fixed so
+        the symbol identity is preserved, while the fresh noise yields a new,
+        similar instance. noise_std=None reuses the training-time level
+        (self.noise_std); pass a larger value to drift further from the original."""
+        feat_xs = feat_xs.to(device)
+        std = self.noise_std if noise_std is None else noise_std
+        noise = torch.randn_like(feat_xs).to(device) * std
+        return self._decode_normalized(feat_xs + noise, label)
 
 class ImageEncoder(nn.Module):
     def __init__(self):
@@ -761,4 +806,3 @@ if __name__ == "__main__":
     dis_model = DisModel().to(device)
     output = dis_model(generated_img)
     #print(f"Output shape: {output.shape}")
-

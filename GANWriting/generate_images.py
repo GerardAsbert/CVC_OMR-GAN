@@ -27,29 +27,49 @@ args = parser.parse_args()
 
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 scaler = GradScaler()
-OOV = True
-pretrained_rec = False
+# ── central inference config (everything not on argparse), SNN-style ──────────
+GEN_CONFIG = {
+    "oov":              True,
+    "pretrained_rec":   False,
+    "eval_epoch":       10,
+    "show_iter_num":    1,
+    "bi_gru":           True,
+    "visualize_train":  True,
+    "batch_size":       16,
+    "lr_dis":           1e-5,
+    "lr_gen":           1e-4,
+    "lr_rec":           1e-5,
+    "models_to_use":    [0, 2, 4, 5, 7, 8],
+    "shear_factor":     0.2,
+    "bg_color":         "white",   # MUST match the padding used at training time
+    "final_folder":     '../../../../data/gasbert/imagesGerard_handwritten/finalImages',
 
-EARLY_STOP_EPOCH = None
-EVAL_EPOCH = 10
-show_iter_num = 1
-LABEL_SMOOTH = True
-Bi_GRU = True
-VISUALIZE_TRAIN = True
+    # SNN-style new-sample generation from saved latents
+    "n_jitter":         5,         # #new jittered samples per source image (0 disables)
+    "jitter_noise_std": None,      # jitter noise level; None -> training-time w_noise
+    "latent_folder":    '../../../../data/gasbert/imagesGerard_handwritten/latents',
+    "jitter_folder":    '../../../../data/gasbert/imagesGerard_handwritten/newSamples',
+}
 
-BATCH_SIZE = 16
-lr_dis = 1e-5
-lr_gen = 1e-4
-lr_rec = 1e-5
+OOV             = GEN_CONFIG["oov"]
+pretrained_rec  = GEN_CONFIG["pretrained_rec"]
+EVAL_EPOCH      = GEN_CONFIG["eval_epoch"]
+show_iter_num   = GEN_CONFIG["show_iter_num"]
+Bi_GRU          = GEN_CONFIG["bi_gru"]
+VISUALIZE_TRAIN = GEN_CONFIG["visualize_train"]
+BATCH_SIZE      = GEN_CONFIG["batch_size"]
+lr_dis          = GEN_CONFIG["lr_dis"]
+lr_gen          = GEN_CONFIG["lr_gen"]
+lr_rec          = GEN_CONFIG["lr_rec"]
+models_to_use   = GEN_CONFIG["models_to_use"]
+shear_factor    = GEN_CONFIG["shear_factor"]
+FINAL_FOLDER    = GEN_CONFIG["final_folder"]
 top15_cosine_euclidean = []
-models_to_use = [0, 2, 4, 5, 7, 8]
-shear_factor = 0.2
-FINAL_FOLDER = '../../../../data/gasbert/imagesGerard_handwritten/finalImages'
 
 
 CurriculumModelID = args.start_epoch
 def all_data_loader():
-    test_loader = load_data_func()
+    test_loader = load_data_func(bg_color=GEN_CONFIG["bg_color"])
     test_loader = torch.utils.data.DataLoader(dataset=test_loader.dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     return test_loader
 
@@ -76,7 +96,14 @@ def generate_base_images(test_loader, epoch, modelFile_o_model):
         test_data_list = (tr_img, tr_label)
 
         #l_dis, l_rec = model(test_data_list, epoch, 'eval', cer_te)
-        l_dis, l_rec = model(test_data_list, epoch, 'eval', final_folder=FINAL_FOLDER)
+        l_dis, l_rec = model(
+            test_data_list, epoch, 'eval',
+            final_folder=FINAL_FOLDER,
+            n_jitter=GEN_CONFIG["n_jitter"],
+            jitter_noise_std=GEN_CONFIG["jitter_noise_std"],
+            latent_folder=GEN_CONFIG["latent_folder"],
+            jitter_folder=GEN_CONFIG["jitter_folder"],
+        )
 
         loss_dis.append(l_dis.cpu().item())
         loss_rec.append(l_rec.cpu().item())
@@ -209,5 +236,5 @@ if __name__ == '__main__':
     print(f"Network_tro.py vocab_size: {vocab_size}")
     print(time.ctime())
     test_loader = all_data_loader()
-    main(train_loader, test_loader, imp_loader)
+    main(test_loader)
     print(time.ctime())
