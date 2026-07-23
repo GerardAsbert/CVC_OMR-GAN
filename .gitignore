@@ -11,3 +11,4 @@ GANWriting/wandb/
 wandb/
 GANWriting/weights/
 final_classifier_testing
+GANWriting/train_outputs/

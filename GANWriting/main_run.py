@@ -358,7 +358,7 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, ru
         with torch.no_grad():
 
             if mean_cosine_sim != None:
-                model_folder = "/data2/users/gasbert/music-symbol-GAN/results/weights"
+                model_folder = "/data/113-2/users/gasbert/music-symbol-GAN/results/weights"
                 if not os.path.exists(model_folder):
                     os.makedirs(model_folder)
                 folder_weights = os.path.join(model_folder, 'save_weights_run' + str(run_id))
@@ -413,7 +413,7 @@ def main(train_loader, test_loader, lr_dis, lr_gen, lr_rec, imp_loader=None, run
         "run_id": run_id,
         "loss_type": loss_type,
     }
-    wandb.init(project="ICDAR_26_SNNs_GAN", config=run_config)
+    wandb.init(project="[TESTS]snn-handwriting-off-raster", config=run_config)
 
     # Log the learning curve against images-seen (not the wandb step), so it is
     # directly comparable to the SNN's curve.
@@ -506,6 +506,22 @@ def main(train_loader, test_loader, lr_dis, lr_gen, lr_rec, imp_loader=None, run
     # same closing step the SNN performs.
     analyze_and_plot(model, test_loader, DEFAULT_CONFIG["train_image_dir"],
                      loss_history=loss_history)
+
+    # ── inference on the freshly-trained model, in the SAME wandb run ─────────
+    # The run is still open here, so run_inference logs everything under
+    # "inference/…" in this run, exactly as the SNN's train.py does.
+    # The import is deliberately local: generate_images sets CUDA_LAUNCH_BLOCKING
+    # at import time, which would cripple training speed if imported up top.
+    try:
+        from generate_images import run_inference
+        run_inference(
+            model,
+            out_dir=os.path.join(DEFAULT_CONFIG["train_image_dir"], "inference"),
+            wandb_prefix="inference",
+            bg_color=DEFAULT_CONFIG["bg_color"],
+        )
+    except Exception as e:
+        print(f"[inference] skipped due to error: {e}")
 
 
 

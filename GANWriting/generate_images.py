@@ -23,9 +23,6 @@ os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-G
 
 os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-parser = argparse.ArgumentParser(description='seq2seq net', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('start_epoch', type=int, help='load saved weights from which epoch')
-args = parser.parse_args()
 
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 scaler = GradScaler()
@@ -45,6 +42,11 @@ GEN_CONFIG = {
     "shear_factor":     0.2,
     "bg_color":         "white",   # MUST match the padding used at training time
 
+    # Where the standalone script looks for checkpoints. Training writes its
+    # top-15 models to <model_folder>/save_weights_run<run_id>/GAN-<id>-<score>.model,
+    # so point this there when running this script by hand.
+    "models_folder":    "/data/113-2/users/gasbert/music-symbol-GAN/results/weights",
+
     # SNN-style new-sample generation from saved latents
     "n_jitter":         3,         # #new jittered samples per source image (SNN uses 3; 0 disables)
     "jitter_noise_std": None,      # jitter noise level; None -> training-time w_noise
@@ -53,15 +55,22 @@ GEN_CONFIG = {
     #   <out_dir>/training_instances/<class>/inst_<n>.png
     #   <out_dir>/new_jitter/<class>/inst_<n>_new_jitter_<j>.png
     #   <out_dir>/latents/<class>/inst_<n>.npy
-    "out_dir":          '../../../../data/gasbert/imagesGerard_handwritten/inference_outputs',
-    "wandb_project":    "ICDAR_26_SNNs_GAN",
+    "out_dir":          '/data/113-2/users/gasbert/music-symbol-GAN/results/inference_outputs',
+    "wandb_project":    "[TESTS]snn-handwriting-off-raster",
     "wandb_prefix":     "inference",   # keys become "inference/training_instances", etc.
 }
 
-OUT_DIR       = GEN_CONFIG["out_dir"]
-FINAL_FOLDER  = os.path.join(OUT_DIR, "training_instances")
-JITTER_FOLDER = os.path.join(OUT_DIR, "new_jitter")
-LATENT_FOLDER = os.path.join(OUT_DIR, "latents")
+OUT_DIR = GEN_CONFIG["out_dir"]
+
+
+def _folders(out_dir):
+    """The SNN's inference_outputs/ layout, rooted at any out_dir."""
+    return (os.path.join(out_dir, "training_instances"),
+            os.path.join(out_dir, "new_jitter"),
+            os.path.join(out_dir, "latents"))
+
+
+FINAL_FOLDER, JITTER_FOLDER, LATENT_FOLDER = _folders(OUT_DIR)
 
 OOV             = GEN_CONFIG["oov"]
 pretrained_rec  = GEN_CONFIG["pretrained_rec"]
@@ -75,17 +84,18 @@ lr_gen          = GEN_CONFIG["lr_gen"]
 lr_rec          = GEN_CONFIG["lr_rec"]
 models_to_use   = GEN_CONFIG["models_to_use"]
 shear_factor    = GEN_CONFIG["shear_factor"]
+MODELS_FOLDER   = GEN_CONFIG["models_folder"]
 top15_cosine_euclidean = []
 
 
-CurriculumModelID = args.start_epoch
-def all_data_loader():
-    test_loader = load_data_func(bg_color=GEN_CONFIG["bg_color"])
+def all_data_loader(bg_color=None):
+    test_loader = load_data_func(bg_color=bg_color or GEN_CONFIG["bg_color"])
     test_loader = torch.utils.data.DataLoader(dataset=test_loader.dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     return test_loader
 
 
-def generate_base_images(test_loader, epoch, modelFile_o_model):
+def generate_base_images(test_loader, epoch, modelFile_o_model, out_dir=None):
+    final_folder, jitter_folder, latent_folder = _folders(out_dir or OUT_DIR)
     if type(modelFile_o_model) == str:
         model = ConTranModel(show_iter_num, OOV, pretrained_rec=False).to(device)
         print('Loading ' + modelFile_o_model)
@@ -109,11 +119,11 @@ def generate_base_images(test_loader, epoch, modelFile_o_model):
         #l_dis, l_rec = model(test_data_list, epoch, 'eval', cer_te)
         l_dis, l_rec = model(
             test_data_list, epoch, 'eval',
-            final_folder=FINAL_FOLDER,
+            final_folder=final_folder,
             n_jitter=GEN_CONFIG["n_jitter"],
             jitter_noise_std=GEN_CONFIG["jitter_noise_std"],
-            latent_folder=LATENT_FOLDER,
-            jitter_folder=JITTER_FOLDER,
+            latent_folder=latent_folder,
+            jitter_folder=jitter_folder,
         )
 
         loss_dis.append(l_dis.cpu().item())
@@ -203,6 +213,57 @@ def augment_images(input_folder):
                 index += 1
 
 
+def run_inference(model, test_loader=None, out_dir=None, wandb_prefix=None,
+                  bg_color=None, augment=False, wandb_project=None):
+    """Run inference on an ALREADY-TRAINED, in-memory model — the GAN's
+    equivalent of the SNN's run_inference, so training can chain straight into
+    it without reloading a checkpoint.
+
+    wandb behaviour is identical to the SNN's:
+      * A run is already active (called from main_run at the end of training):
+        log into THAT run under "<wandb_prefix>/…". Do not init/finish.
+      * No active run: start one just for inference and finish it before
+        returning.
+
+    `augment` defaults to False because the SNN performs no augmentation at
+    inference; the standalone script keeps its original augmentation step.
+    """
+    out_dir = out_dir or OUT_DIR
+    wandb_prefix = GEN_CONFIG["wandb_prefix"] if wandb_prefix is None else wandb_prefix
+
+    # DataParallel wrappers don't survive the eval path (each replica would write
+    # its own files), so always run on the underlying module.
+    base = model.module if isinstance(model, torch.nn.DataParallel) else model
+    base = base.to(device)
+    base.eval()
+
+    if test_loader is None:
+        test_loader = all_data_loader(bg_color=bg_color)
+
+    own_run = wandb.run is None
+    if own_run:
+        wandb.init(project=wandb_project or GEN_CONFIG["wandb_project"],
+                   job_type="inference", config=GEN_CONFIG)
+
+    # Clear accumulated wandb images / instance numbering for this pass.
+    reset_image_buffers()
+
+    print(f"[inference] generating into {out_dir} ...")
+    loss_dis, loss_rec = generate_base_images(test_loader, 0, base, out_dir=out_dir)
+
+    # One wandb.log per category with the full image list, exactly as the SNN does.
+    log_image_buffers(prefix=wandb_prefix)
+
+    if augment:
+        augment_images(_folders(out_dir)[0])
+
+    print("[inference] done.")
+    if own_run:
+        wandb.finish()
+
+    return loss_dis, loss_rec
+
+
 def main(test_loader):
     print(f"Device: {device}")
     model = ConTranModel(show_iter_num, OOV, pretrained_rec=pretrained_rec).to(device)
@@ -219,7 +280,7 @@ def main(test_loader):
     # Clear accumulated wandb images / instance numbering for this pass.
     reset_image_buffers()
 
-    models_folder = "save_weights"
+    models_folder = MODELS_FOLDER
 
     for id in models_to_use:
         highest_file = None
@@ -228,8 +289,9 @@ def main(test_loader):
         # Iterate through all files in the directory
         for file in os.listdir(models_folder):
             if file.startswith("GAN-" + str(id)) and file.endswith(".model"):
-                # Extract the number using a regex
-                match = re.search(r"GAN-0-(\d+\.\d+)\.model", file)
+                # Extract the score for THIS id (the old pattern hardcoded id 0,
+                # so every other id silently found nothing).
+                match = re.search(rf"GAN-{id}-(\d+(?:\.\d+)?)\.model", file)
                 if match:
                     number = float(match.group(1))  # Convert to float
                     # Update if this number is higher
@@ -238,7 +300,12 @@ def main(test_loader):
                         highest_file = file
         print("Highest file: " + str(highest_file))
 
-        l_dis_test, l_rec_test = generate_base_images(test_loader, 0, models_folder + "/" + highest_file)
+        if highest_file is None:
+            print(f"  no checkpoint matching GAN-{id}-*.model in {models_folder}; skipping.")
+            continue
+
+        l_dis_test, l_rec_test = generate_base_images(
+            test_loader, 0, os.path.join(models_folder, highest_file), out_dir=OUT_DIR)
 
     # One wandb.log per category with the full image list, exactly as the SNN does:
     # "inference/training_instances" and "inference/new_jitter".
@@ -263,6 +330,13 @@ def rm_old_model(index):
             os.system('rm save_weights/contran-' + str(epoch) + '.model')
 
 if __name__ == '__main__':
+    # argparse lives here (not at module scope) so this file can be imported by
+    # main_run.py without hijacking that script's command line.
+    parser = argparse.ArgumentParser(description='seq2seq net', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('start_epoch', type=int, help='load saved weights from which epoch')
+    args = parser.parse_args()
+    CurriculumModelID = args.start_epoch
+
     print(f"Network_tro.py vocab_size: {vocab_size}")
     print(time.ctime())
     test_loader = all_data_loader()
