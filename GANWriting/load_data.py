@@ -176,6 +176,32 @@ def loadData(directories=None, batch_size=128, num_workers=0, test_split_ratio=0
     return train_loader, test_loader
 
 
+def loadData_full(directories=None, batch_size=128, num_workers=0, bg_color=BG_COLOR):
+    """Same as loadData, but with NO train/test split: the whole dataset is used
+    both for training and for evaluation. The two loaders wrap the SAME dataset
+    object (built once, so the directory scan only happens once); only the
+    shuffling differs, so the eval pass keeps a fixed, reproducible order.
+
+    Note that with this loader 'curve/eval_mse' measures fit on the training
+    data, not generalisation."""
+    if directories is None:
+        directories = ['/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst/manuscript copy, copyist: I. B.',
+                       '/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst/manuscript copy, copyist: Zirnstein, Anton (19th century)',
+                       '/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst/manuscript copy, copyist: Schicht, Johann Gottfried (1753-1823)']
+
+    dataset = MusicSymbolDataset(directories, TARGET_CLASSES, bg_color=bg_color)
+
+    if len(dataset) == 0:
+        raise ValueError("El dataset está vacío")
+
+    print(f"\nlen(train_dataset): {len(dataset)}  (dataset completo, sin split)")
+    print(f"\nlen(test_dataset): {len(dataset)}  (las MISMAS instancias que train)")
+    print(f"\nindex2letter: {index2letter}")
+    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    test_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+    return train_loader, test_loader
+
+
 def loadData_imp(directories=None, batch_size=128, num_workers=0, bg_color=BG_COLOR):
     if directories is None:
         #directories = ['../Projecte_GANs/Datasets/Printed/deepscores_symbols_reduced'] #'./dataset1', './dataset2',

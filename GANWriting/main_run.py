@@ -25,7 +25,7 @@ import time
 import argparse
 from tqdm import trange, tqdm
 
-from load_data import loadData as load_data_func, vocab_size, IMG_WIDTH, IMG_HEIGHT, loadData_imp, index2letter
+from load_data import loadData as load_data_func, loadData_full, vocab_size, IMG_WIDTH, IMG_HEIGHT, loadData_imp, index2letter
 from network_tro import ConTranModel, set_crit, set_loss_weights
 from collections import Counter
 
@@ -73,6 +73,10 @@ DEFAULT_CONFIG = {
     "convergence_min_delta":   1e-9,      # min ABSOLUTE MSE drop that counts as an improvement
     "convergence_max_epochs":  15880,      # hard safety cap on epochs in convergence mode
     "convergence_eval_seed":   12345,     # fixed seed so the generator's eval noise is reproducible
+
+    # train and evaluate on the WHOLE dataset (no held-out split). True ->
+    # loadData_full; False -> loadData's 90/10 random_split.
+    "full_dataset_no_split":   True,
 }
 
 # Derive the module-level names the rest of the file uses from the config.
@@ -93,7 +97,10 @@ top15_cosine_euclidean = []
 
 def all_data_loader(important_symbols=True):
     bg_color = DEFAULT_CONFIG["bg_color"]
-    train_loader, test_loader = load_data_func(bg_color=bg_color)
+    if DEFAULT_CONFIG["full_dataset_no_split"]:
+        train_loader, test_loader = loadData_full(bg_color=bg_color)
+    else:
+        train_loader, test_loader = load_data_func(bg_color=bg_color)
     train_loader = torch.utils.data.DataLoader(dataset=train_loader.dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
     test_loader = torch.utils.data.DataLoader(dataset=test_loader.dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     balance_data_loader(train_loader)
@@ -316,7 +323,7 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, ru
             loss_history.append(batch_mse)
             wandb.log({"curve/train_mse": batch_mse, "images_seen": images_seen})
 
-        if i in (0, 20):
+        '''if i in (0, 20):
             wandb.log({
                 f"predictions/epoch_{epoch}/batch_{i}_pred_vs_gt": wandb.Table(
                     columns=["index", "predicted", "ground_truth"],
@@ -327,7 +334,7 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, ru
                         )
                     ]
                 )
-            })
+            })'''
 
         # Per-symbol target-vs-generated figures, same cadence and keys as the SNN
         # (the SNN logs every 100 training iterations).
