@@ -5,7 +5,7 @@ import glob
 from torch import optim
 from skimage.metrics import structural_similarity as ssim
 import torch.nn.functional as F
-from torch.amp import GradScaler
+from torch.cuda.amp import GradScaler
 import numpy as np
 import matplotlib
 matplotlib.use('Agg')

@@ -4,7 +4,7 @@ os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/miniconda3/envs/music-symbol-gan/l
 #os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-GAN-OMR/plugins"
 #os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["CUDA_VISIBLE_DEVICES"] = '4'
+os.environ["CUDA_VISIBLE_DEVICES"] = '5'
 
 import torch
 import glob
@@ -68,10 +68,10 @@ DEFAULT_CONFIG = {
 
     # train-until-convergence (same idea/params as the SNN, in epoch units)
     "train_until_convergence": True,     # False -> run `epochs`; True -> stop on MSE plateau
-    "convergence_eval_every":  1,         # epochs between full test-set MSE evals
-    "convergence_patience":    10,        # #evals with no improvement (> min_delta) before stopping
+    "convergence_eval_every":  32,         # epochs between full test-set MSE evals
+    "convergence_patience":    6,        # #evals with no improvement (> min_delta) before stopping
     "convergence_min_delta":   1e-9,      # min ABSOLUTE MSE drop that counts as an improvement
-    "convergence_max_epochs":  1000,      # hard safety cap on epochs in convergence mode
+    "convergence_max_epochs":  15880,      # hard safety cap on epochs in convergence mode
     "convergence_eval_seed":   12345,     # fixed seed so the generator's eval noise is reproducible
 }
 
