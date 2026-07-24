@@ -68,6 +68,9 @@ vocab_size = len(tokens)
 num_tokens = 4
 NUM_CHANNEL = 3
 
+# Canonical lower case classes
+_CLASS_BY_LOWER = {c.lower(): c for c in TARGET_CLASSES}
+
 print(f"vocab_size: {vocab_size}")
 
 
@@ -99,6 +102,8 @@ class MusicSymbolDataset(Dataset):
         self.data_dirs = data_dirs
         self.target_classes = target_classes
         self.pad_fill = _bg_fill(bg_color)   # square-padding fill from background colour
+        self._canonical = {c.lower(): _CLASS_BY_LOWER.get(c.lower(), c)
+                           for c in target_classes}
         self.transform = transform or transforms.Compose([
             transforms.Resize((IMG_HEIGHT, IMG_WIDTH)),
             transforms.Grayscale(num_output_channels=1),
@@ -117,11 +122,12 @@ class MusicSymbolDataset(Dataset):
                 symbol_index = 0
                 symbol_dir = os.path.join(data_dir, symbol)
                 symbol_lower = symbol.lower()
-                if symbol_lower in self.target_classes and os.path.isdir(symbol_dir):
-                    if symbol_lower not in tokens:
-                        tokens[symbol_lower] = len(tokens)
-                    if symbol_lower not in self.classes:
-                        self.classes.append(symbol_lower)
+                symbol_key = self._canonical.get(symbol_lower)
+                if symbol_key is not None and os.path.isdir(symbol_dir):
+                    if symbol_key not in tokens:
+                        tokens[symbol_key] = len(tokens)
+                    if symbol_key not in self.classes:
+                        self.classes.append(symbol_key)
                     print(f"Existente: {symbol_dir}")
                     png_count = 0
                     for img_file in os.listdir(symbol_dir):
@@ -129,7 +135,7 @@ class MusicSymbolDataset(Dataset):
                             if symbol_index >= imgs_per_dataset and test:
                                 break
                             png_count += 1
-                            self.data.append((os.path.join(symbol_dir, img_file), tokens[symbol_lower]))
+                            self.data.append((os.path.join(symbol_dir, img_file), tokens[symbol_key]))
                             print(f"Añadido: {os.path.join(symbol_dir, img_file)}")
                             symbol_index += 1
                     print(f"Archivos .png encontrados en {symbol_dir}: {png_count}")

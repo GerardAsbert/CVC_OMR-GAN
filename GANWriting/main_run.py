@@ -4,7 +4,7 @@ os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/miniconda3/envs/music-symbol-gan/l
 #os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-GAN-OMR/plugins"
 #os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["CUDA_VISIBLE_DEVICES"] = '5'
+os.environ["CUDA_VISIBLE_DEVICES"] = '0'
 
 import torch
 import glob
@@ -571,8 +571,11 @@ def _log_symbol_images_to_wandb(model, tr_img, tr_label, step):
     with torch.no_grad():
         gen_batch = base.gen(tr_img, tr_label)   # reconstruction with the TRUE label
 
+    # Collect every class present in the batch and emit ONE wandb.log, so all
+    # symbols share a step instead of each one advancing the step counter.
+    payload = {}
     for li in sorted(set(int(l) for l in labels)):
-        nombre_base = index2letter[li]
+        nombre_base = index2letter.get(li, f"class_{li}")
         last_i = np.where(labels == li)[0][-1]
 
         gen = gen_batch[last_i].detach().cpu().squeeze().numpy()
@@ -583,8 +586,11 @@ def _log_symbol_images_to_wandb(model, tr_img, tr_label, step):
         _imshow_any(axes[0], tgt); axes[0].set_title("target")
         _imshow_any(axes[1], gen); axes[1].set_title("generated")
         fig.suptitle(f"{nombre_base}  iter {step}  MSE:{mse:.4f}"); plt.tight_layout()
-        wandb.log({f"images/{nombre_base}": wandb.Image(fig)})
-        plt.close()
+        payload[f"images/{nombre_base}"] = wandb.Image(fig)
+        plt.close(fig)
+
+    if payload:
+        wandb.log(payload)
 
 
 def analyze_and_plot(model, test_loader, output_dir, loss_history=None):
