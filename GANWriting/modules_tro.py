@@ -350,11 +350,17 @@ def write_image_cosine(xg, pred_label, gt_img, gt_label, iter, mean_cosine, mean
     if not (gt_label == 4).any().item() and iter % 5 == 0:
         cv2.imwrite(folder1 + '/cosine_' + str(mean_cosine)[:5] + '-euclidean_' + str(mean_euclidean)[:5] + '-ssim_' + str(mean_ssim)[:6] + '.jpg', final_out)
 
-def write_final_images(xg, pred_label, gt_img, gt_label, title, final_folder):
+def write_final_images(xg, pred_label, gt_img, gt_label, title, final_folder,
+                       authors=None, author_folder=None):
     """Write the reconstruction of every test instance, exactly as the SNN's
     inference step 1 does: <final_folder>/<class>/inst_<n>.png, saved with
     save_gray on a FIXED [0, 1] scale, and buffered for a single wandb log under
     'training_instances' with caption '<class>/inst_<n>'.
+
+    When `author_folder` and `authors` are given, each image is ALSO written to
+    <author_folder>/<author>/<class>/inst_<n>.png, mirroring the input dataset's
+    <author_name>/<symbol_name> layout. `authors` is the per-sample author list
+    (aligned to the batch); the wandb logging is unaffected.
 
     Returns the per-sample instance indices so the jitter images and latents of
     the same batch can reuse them.
@@ -371,6 +377,8 @@ def write_final_images(xg, pred_label, gt_img, gt_label, title, final_folder):
         g = xg[i].squeeze()   # already in [0, 1] from the generator's normalisation
         save_gray(g, os.path.join(final_folder, cls, f"inst_{n}.png"))
         _buffer_image("training_instances", _wandb_img(g, f"{cls}/inst_{n}"))
+        if author_folder is not None and authors is not None:
+            save_gray(g, os.path.join(author_folder, authors[i], cls, f"inst_{n}.png"))
 
     return inst_ids
 
@@ -397,12 +405,18 @@ def save_latents(feat_xs, gt_label, inst_ids, latent_folder):
         np.save(os.path.join(d, f"inst_{n}.npy"), feats[i])
 
 
-def write_jitter_images(xg, gt_label, inst_ids, jitter_folder, jitter_idx):
+def write_jitter_images(xg, gt_label, inst_ids, jitter_folder, jitter_idx,
+                        authors=None, author_folder=None):
     """Write fresh-jitter instances exactly as the SNN's inference step 2 does:
     <jitter_folder>/<class>/inst_<n>_new_jitter_<j>.png via save_gray on a fixed
     [0, 1] scale, buffered for a single wandb log under 'new_jitter' with caption
     '<class>/inst_<n> #<j>'. (The SNN has one source per author/symbol pair; the
-    GAN has one per test image, so inst_<n> disambiguates the source.)"""
+    GAN has one per test image, so inst_<n> disambiguates the source.)
+
+    When `author_folder` and `authors` are given, each jitter is ALSO written to
+    <author_folder>/<author>/<class>/inst_<n>_new_jitter_<j>.png, so the straight
+    generations and the jitters share the same <author_name>/<symbol_name>
+    folder as the input dataset. The wandb logging is unaffected."""
     if jitter_folder is None:
         return
     xg_np = xg.detach().cpu().numpy()
@@ -412,6 +426,9 @@ def write_jitter_images(xg, gt_label, inst_ids, jitter_folder, jitter_idx):
         g = xg_np[i].squeeze()   # already in [0, 1] from the generator's normalisation
         save_gray(g, os.path.join(jitter_folder, cls, f"inst_{n}_new_jitter_{jitter_idx}.png"))
         _buffer_image("new_jitter", _wandb_img(g, f"{cls}/inst_{n} #{jitter_idx}"))
+        if author_folder is not None and authors is not None:
+            save_gray(g, os.path.join(author_folder, authors[i],
+                                      cls, f"inst_{n}_new_jitter_{jitter_idx}.png"))
 
 
 def return_image(xg, pred_label, gt_img, gt_label, title, iter):

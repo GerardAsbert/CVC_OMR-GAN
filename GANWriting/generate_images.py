@@ -56,21 +56,35 @@ GEN_CONFIG = {
     #   <out_dir>/new_jitter/<class>/inst_<n>_new_jitter_<j>.png
     #   <out_dir>/latents/<class>/inst_<n>.npy
     "out_dir":          '/data/113-2/users/gasbert/music-symbol-GAN/results/inference_outputs',
+
+    # On-disk mirror of the inference images in the SAME layout as the input
+    # dataset: <out_dir>/<author_symbol_subdir>/<author_name>/<symbol_name>/.
+    # Each symbol folder holds BOTH the straight generations (inst_<n>.png) and
+    # the jitters (inst_<n>_new_jitter_<j>.png) — the same images logged to
+    # wandb, minus the style interpolation. Set to "" to root the author folders
+    # directly at out_dir instead of under a subfolder.
+    "author_symbol_subdir": "by_author",
+
     "wandb_project":    "[TESTS]snn-handwriting-off-raster",
     "wandb_prefix":     "inference",   # keys become "inference/training_instances", etc.
 }
 
 OUT_DIR = GEN_CONFIG["out_dir"]
+AUTHOR_SUBDIR = GEN_CONFIG["author_symbol_subdir"]
 
 
 def _folders(out_dir):
-    """The SNN's inference_outputs/ layout, rooted at any out_dir."""
+    """The SNN's inference_outputs/ layout, rooted at any out_dir, plus a fourth
+    root that mirrors the images in the input dataset's
+    <author_name>/<symbol_name> layout (holding both straight generations and
+    jitters)."""
     return (os.path.join(out_dir, "training_instances"),
             os.path.join(out_dir, "new_jitter"),
-            os.path.join(out_dir, "latents"))
+            os.path.join(out_dir, "latents"),
+            os.path.join(out_dir, AUTHOR_SUBDIR) if AUTHOR_SUBDIR else out_dir)
 
 
-FINAL_FOLDER, JITTER_FOLDER, LATENT_FOLDER = _folders(OUT_DIR)
+FINAL_FOLDER, JITTER_FOLDER, LATENT_FOLDER, AUTHOR_FOLDER = _folders(OUT_DIR)
 
 OOV             = GEN_CONFIG["oov"]
 pretrained_rec  = GEN_CONFIG["pretrained_rec"]
@@ -95,7 +109,7 @@ def all_data_loader(bg_color=None):
 
 
 def generate_base_images(test_loader, epoch, modelFile_o_model, out_dir=None):
-    final_folder, jitter_folder, latent_folder = _folders(out_dir or OUT_DIR)
+    final_folder, jitter_folder, latent_folder, author_folder = _folders(out_dir or OUT_DIR)
     if type(modelFile_o_model) == str:
         model = ConTranModel(show_iter_num, OOV, pretrained_rec=False).to(device)
         print('Loading ' + modelFile_o_model)
@@ -110,7 +124,13 @@ def generate_base_images(test_loader, epoch, modelFile_o_model, out_dir=None):
     cer_te2 = CER()
     ssim_scores = []
     for test_data_list in test_loader:
-        tr_img, tr_label = test_data_list
+        # The generate loader yields (img, label, author); other loaders yield
+        # (img, label). Handle both so this stays robust if fed a plain loader.
+        if len(test_data_list) == 3:
+            tr_img, tr_label, tr_author = test_data_list
+        else:
+            tr_img, tr_label = test_data_list
+            tr_author = None
         tr_img = tr_img.to(device)
         tr_label = tr_label.to(device)
 
@@ -124,6 +144,8 @@ def generate_base_images(test_loader, epoch, modelFile_o_model, out_dir=None):
             jitter_noise_std=GEN_CONFIG["jitter_noise_std"],
             latent_folder=latent_folder,
             jitter_folder=jitter_folder,
+            authors=tr_author,
+            author_folder=author_folder,
         )
 
         loss_dis.append(l_dis.cpu().item())

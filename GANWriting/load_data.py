@@ -97,10 +97,17 @@ def _pad_to_square(img, fill):
 
 
 class MusicSymbolDataset(Dataset):
-    def __init__(self, data_dirs, target_classes, transform=None, test=False, bg_color=BG_COLOR):
+    def __init__(self, data_dirs, target_classes, transform=None, test=False, bg_color=BG_COLOR,
+                 return_author=False):
         global tokens
         self.data_dirs = data_dirs
         self.target_classes = target_classes
+        # When True, __getitem__ returns (image, label, author) instead of
+        # (image, label). `author` is the top-level input folder name (the
+        # copyist/author dir), so inference can mirror the dataset's
+        # <author_name>/<symbol_name> layout on disk. Off by default so the
+        # training loaders keep their original (image, label) contract.
+        self.return_author = return_author
         self.pad_fill = _bg_fill(bg_color)   # square-padding fill from background colour
         self._canonical = {c.lower(): _CLASS_BY_LOWER.get(c.lower(), c)
                            for c in target_classes}
@@ -118,6 +125,9 @@ class MusicSymbolDataset(Dataset):
             if not os.path.exists(data_dir):
                 print(f"Directorio no existe: {data_dir}")
                 continue
+            # The author/copyist folder name (== the input dir name), used to
+            # rebuild the <author_name>/<symbol_name> tree at inference time.
+            author = os.path.basename(os.path.normpath(data_dir))
             for symbol in sorted(os.listdir(data_dir)):
                 symbol_index = 0
                 symbol_dir = os.path.join(data_dir, symbol)
@@ -135,7 +145,7 @@ class MusicSymbolDataset(Dataset):
                             if symbol_index >= imgs_per_dataset and test:
                                 break
                             png_count += 1
-                            self.data.append((os.path.join(symbol_dir, img_file), tokens[symbol_key]))
+                            self.data.append((os.path.join(symbol_dir, img_file), tokens[symbol_key], author))
                             print(f"Añadido: {os.path.join(symbol_dir, img_file)}")
                             symbol_index += 1
                     print(f"Archivos .png encontrados en {symbol_dir}: {png_count}")
@@ -151,10 +161,12 @@ class MusicSymbolDataset(Dataset):
         return len(self.data)
 
     def __getitem__(self, idx):
-        img_path, label = self.data[idx]
+        img_path, label, author = self.data[idx]
         image = Image.open(img_path).convert('L')
         image = _pad_to_square(image, self.pad_fill)   # square-pad with bg colour, then resize
         image = self.transform(image)
+        if self.return_author:
+            return image, label, author
         return image, label
 
 def loadData(directories=None, batch_size=128, num_workers=0, test_split_ratio=0.1, bg_color=BG_COLOR):
@@ -250,7 +262,8 @@ def loadData_generate(directories=None, batch_size=128, num_workers=0, bg_color=
                        '/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst/manuscript copy, copyist: Zirnstein, Anton (19th century)',
                        '/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst/manuscript copy, copyist: Schicht, Johann Gottfried (1753-1823)']
 
-    dataset = MusicSymbolDataset(directories, TARGET_CLASSES, test=True, bg_color=bg_color)
+    dataset = MusicSymbolDataset(directories, TARGET_CLASSES, test=True, bg_color=bg_color,
+                                 return_author=True)
 
     if len(dataset) == 0:
         raise ValueError("El dataset está vacío")

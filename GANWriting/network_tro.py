@@ -61,7 +61,8 @@ class ConTranModel(nn.Module):
             self.eval()
 
     def forward(self, train_data_list, epoch, mode, cer_func=None, final_folder=None,
-                n_jitter=0, jitter_noise_std=None, latent_folder=None, jitter_folder=None):
+                n_jitter=0, jitter_noise_std=None, latent_folder=None, jitter_folder=None,
+                authors=None, author_folder=None):
         tr_img, tr_label = train_data_list
         noisy_img = tr_img.clone()
         batch_size = tr_img.shape[0]
@@ -281,7 +282,10 @@ class ConTranModel(nn.Module):
                 title = 'eval-' + str(self.iter_num).zfill(7)
                 # Reconstruction of every test instance (SNN inference step 1).
                 # Returns the per-class instance indices used in the filenames.
-                inst_ids = write_final_images(generated_img, pred_xt, tr_img, tr_label, title, final_folder)
+                # `authors`/`author_folder` additionally mirror each image under
+                # <author_folder>/<author>/<class>/ (input-folder layout).
+                inst_ids = write_final_images(generated_img, pred_xt, tr_img, tr_label, title, final_folder,
+                                              authors=authors, author_folder=author_folder)
 
                 # ── SNN-style new-sample generation (SNN inference step 2) ────
                 # Save each sample's CLEAN latent, then decode n_jitter fresh-noise
@@ -292,7 +296,8 @@ class ConTranModel(nn.Module):
                     for j in range(n_jitter):
                         jit_img = self.gen.generate_from_latent(
                             feat_xs, tr_label, noise_std=jitter_noise_std)
-                        write_jitter_images(jit_img, tr_label, inst_ids, jitter_folder, j)
+                        write_jitter_images(jit_img, tr_label, inst_ids, jitter_folder, j,
+                                            authors=authors, author_folder=author_folder)
 
                 self.iter_num += 1
                 l_dis = self.dis.calc_gen_loss(generated_img)
