@@ -43,7 +43,7 @@ CurriculumModelID = 0
 DEFAULT_CONFIG = {
     # optimisation / schedule
     "epochs":                  100,
-    "batch_size":              92,
+    "batch_size":              80,
     "eval_epoch":              10,
     "show_iter_num":           1,
     "bi_gru":                  True,

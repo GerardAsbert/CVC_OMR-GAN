@@ -246,11 +246,9 @@ def loadData_sample(directories=None, batch_size=128, num_workers=0, bg_color=BG
 def loadData_generate(directories=None, batch_size=128, num_workers=0, bg_color=BG_COLOR):
     if directories is None:
         #directories = ['../Projecte_GANs/Datasets/Printed/deepscores_symbols_reduced'] #'./dataset1', './dataset2',
-        directories = ['/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/datasets_rot_flip/CapitanSymbols_rot_flip',
-                    '/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/datasets_rot_flip/Fornes_Dataset_rot_flip',
-                    '/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/datasets_rot_flip/imatges_Homus_rot_flip',
-                    '/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/datasets_rot_flip/Muscima_Symbols_rot_flip',
-                    '/data2/users/gasbert/music-symbol-GAN/symbol-datasets/Handwritten/datasets_rot_flip/bad_symbols']
+        directories = ['/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst/manuscript copy, copyist: I. B.',
+                       '/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst/manuscript copy, copyist: Zirnstein, Anton (19th century)',
+                       '/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst/manuscript copy, copyist: Schicht, Johann Gottfried (1753-1823)']
 
     dataset = MusicSymbolDataset(directories, TARGET_CLASSES, test=True, bg_color=bg_color)
 
