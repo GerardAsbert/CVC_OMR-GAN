@@ -1,10 +1,11 @@
 import os
+import shutil
 
 os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/miniconda3/envs/music-symbol-gan/lib/python3.8/site-packages/cv2/qt/plugins"
 #os.environ['QT_QPA_PLATFORM_PLUGIN_PATH'] = "/home/gasbert/miniconda3/envs/CVC-GAN-OMR/plugins"
 #os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["CUDA_VISIBLE_DEVICES"] = '0'
+os.environ["CUDA_VISIBLE_DEVICES"] = '6'
 
 import torch
 import glob
@@ -25,8 +26,6 @@ import time
 import argparse
 from tqdm import trange, tqdm
 
-from load_data import loadData as load_data_func, loadData_full, vocab_size, IMG_WIDTH, IMG_HEIGHT, loadData_imp, index2letter
-from network_tro import ConTranModel, set_crit, set_loss_weights
 from collections import Counter
 
 
@@ -56,15 +55,44 @@ DEFAULT_CONFIG = {
     "w_noise":                 3.0,
     "w_l1":                    0.0,
 
+    # input dataset: the parent folder holding one subfolder per author, each
+    # with <symbol_name>/ subfolders inside. Every author folder found is used.
+    #"data_root": "/data/113-2/users/gasbert/TFM_SNN/UFAL.OmniOMR_train_SymbolLevel_3auth_8inst",
+    "data_root": "/data/113-2/users/gasbert/CYPHERS/copiale/images/symbol_level/all_clean",
+
+    # Share of the dataset to use, in percent, sampled per (author, symbol)
+    # folder: 100 -> everything, 10 -> 10% of each folder (at least one image),
+    # 0 -> exactly one image per symbol per author. The pick is fixed by
+    # `dataset_subset_seed`, and a smaller percentage is a subset of a larger one.
+    "dataset_percentage":      10,
+    "dataset_subset_seed":     0,
+
     # dataset background / padding colour (mirrors the SNN's pad_color)
     "bg_color":                "white",   # "white" -> pad 255, "black" -> pad 0
 
     # MSE-vs-images-seen learning curve (the fair SNN-vs-GAN artifact)
     "mse_log_every":           20,        # log per-batch reconstruction MSE every N batches
 
+    # Also log the MSE against the ORIGINAL COLOUR image, next to the grayscale
+    # one: the 1-channel generation is tiled to RGB and compared to the true
+    # colour target ('*_mse_color' keys). Diagnostic only — it never feeds the
+    # losses or early stopping. Costs one extra RGB decode per sample.
+    "log_color_mse":           False,
+
     # image logging — same convention as the SNN (see _log_symbol_images_to_wandb)
     "img_log_every":           100,       # batches between per-symbol image logs (SNN: every 100 iters)
-    "train_image_dir":         "train_outputs",   # end-of-training PNGs, like the SNN's output_dir
+    # End-of-training PNGs (like the SNN's output_dir) and the inference outputs
+    # go to <train_image_dir>/<dataset folder name>/pct<P>_seed<S>/, emptied at
+    # the end of each training run before writing (see load_data.run_tag).
+    "train_image_dir":         "train_outputs",
+
+    # end-of-training inference (generate_images.run_inference): every training
+    # sample is regenerated, plus ceil(inference_jitter_percentage% x #images)
+    # jitters per (author, class), e.g. 50 -> 50 jitters for a 100-image class.
+    # All images go to disk; only the first N per class are logged to wandb
+    # (None -> all).
+    "inference_jitter_percentage":      50,
+    "inference_wandb_images_per_class": 5,
 
     # train-until-convergence (same idea/params as the SNN, in epoch units)
     "train_until_convergence": True,     # False -> run `epochs`; True -> stop on MSE plateau
@@ -79,6 +107,14 @@ DEFAULT_CONFIG = {
     "full_dataset_no_split":   True,
 }
 
+# The symbol classes are read from the folders under data_root, and the model
+# modules size themselves from them at import time, so load_data is configured
+# before anything that imports it.
+import load_data
+load_data.set_data_root(DEFAULT_CONFIG["data_root"])
+from load_data import loadData as load_data_func, loadData_full, author_dirs, run_tag, vocab_size, IMG_WIDTH, IMG_HEIGHT, loadData_imp, index2letter
+from network_tro import ConTranModel, set_crit, set_loss_weights
+
 # Derive the module-level names the rest of the file uses from the config.
 OOV             = DEFAULT_CONFIG["oov"]
 EPOCHS          = DEFAULT_CONFIG["epochs"]
@@ -89,6 +125,7 @@ Bi_GRU          = DEFAULT_CONFIG["bi_gru"]
 VISUALIZE_TRAIN = DEFAULT_CONFIG["visualize_train"]
 MSE_LOG_EVERY   = DEFAULT_CONFIG["mse_log_every"]
 IMG_LOG_EVERY   = DEFAULT_CONFIG["img_log_every"]
+LOG_COLOR_MSE   = DEFAULT_CONFIG["log_color_mse"]
 
 images_seen = 0            # cumulative training images seen (the SNN-comparison x-axis)
 global_step = 0            # cumulative batches (the SNN's "iter" for image logging)
@@ -97,10 +134,14 @@ top15_cosine_euclidean = []
 
 def all_data_loader(important_symbols=True):
     bg_color = DEFAULT_CONFIG["bg_color"]
+    data_kwargs = dict(directories=author_dirs(DEFAULT_CONFIG["data_root"]), bg_color=bg_color,
+                       return_color=LOG_COLOR_MSE,
+                       dataset_percentage=DEFAULT_CONFIG["dataset_percentage"],
+                       subset_seed=DEFAULT_CONFIG["dataset_subset_seed"])
     if DEFAULT_CONFIG["full_dataset_no_split"]:
-        train_loader, test_loader = loadData_full(bg_color=bg_color)
+        train_loader, test_loader = loadData_full(**data_kwargs)
     else:
-        train_loader, test_loader = load_data_func(bg_color=bg_color)
+        train_loader, test_loader = load_data_func(**data_kwargs)
     train_loader = torch.utils.data.DataLoader(dataset=train_loader.dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
     test_loader = torch.utils.data.DataLoader(dataset=test_loader.dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
     balance_data_loader(train_loader)
@@ -114,8 +155,8 @@ def all_data_loader(important_symbols=True):
 
 def balance_data_loader(loader):
     labels = []
-    for _, tr_label in loader:
-        labels.extend(tr_label.cpu().numpy())
+    for batch in loader:
+        labels.extend(batch[1].cpu().numpy())
     counter = Counter(labels)
     print(f"Label distribution: {counter}")
 
@@ -143,6 +184,21 @@ def compute_ssim(img1, img2):
     return ssim(img1, img2, channel_axis=-1, win_size=7, data_range=img1.max() - img1.min())
 
 
+def _unpack_batch(batch):
+    """(img, label) or (img, label, color) -> (img, label, color|None).
+
+    The colour target is appended last by MusicSymbolDataset when return_color is
+    on (see load_data.py); it is a metric target only and never reaches the model."""
+    return batch[0], batch[1], (batch[2] if len(batch) > 2 else None)
+
+
+def _color_se_sum(gen_img, color_img):
+    """Sum of squared error between the 1-channel generation, tiled to RGB, and
+    the true colour target. The generator can only produce gray, so this metric
+    has a floor equal to the image's own colourfulness — it is a diagnostic."""
+    return float(((gen_img.expand(-1, color_img.size(1), -1, -1) - color_img) ** 2).sum().item())
+
+
 def _full_test_mse(model, test_loader, seed):
     """Reconstruction MSE over the WHOLE test set: gen(img, true label) vs the
     ground-truth image, averaged over all pixels. This is the fair learning-curve
@@ -150,7 +206,11 @@ def _full_test_mse(model, test_loader, seed):
     the GAN analogue of the SNN's deterministic full-dataset MSE.
 
     The generator injects latent noise, so we fix the RNG with `seed` (and restore
-    it afterwards) to make the metric a reproducible function of the weights."""
+    it afterwards) to make the metric a reproducible function of the weights.
+
+    Returns (mse_gray, mse_color), where mse_color is the same reconstruction
+    measured against the ORIGINAL COLOUR image (or None when the loader does not
+    carry colour targets). Both come from the same forward pass."""
     base = model.module if isinstance(model, nn.DataParallel) else model
     was_training = model.training
     model.eval()
@@ -160,20 +220,27 @@ def _full_test_mse(model, test_loader, seed):
     torch.manual_seed(seed)
 
     se_sum, count = 0.0, 0
+    se_sum_color, count_color = 0.0, 0
     with torch.no_grad():
-        for tr_img, tr_label in test_loader:
+        for batch in test_loader:
+            tr_img, tr_label, tr_color = _unpack_batch(batch)
             tr_img = tr_img.to(device)
             tr_label = tr_label.to(device)
             gen_img = base.gen(tr_img, tr_label)
             se_sum += float(((gen_img - tr_img) ** 2).sum().item())
             count += tr_img.numel()
+            if tr_color is not None:
+                tr_color = tr_color.to(device)
+                se_sum_color += _color_se_sum(gen_img, tr_color)
+                count_color += tr_color.numel()
 
     torch.set_rng_state(cpu_rng)
     if cuda_rng is not None:
         torch.cuda.set_rng_state_all(cuda_rng)
     if was_training:
         model.train()
-    return se_sum / max(1, count)
+    mse_color = (se_sum_color / count_color) if count_color else None
+    return se_sum / max(1, count), mse_color
 
 
 def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, run_id, imp_loader=None):
@@ -181,11 +248,15 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, ru
     model.train()
 
     for i, train_data_list in enumerate(tqdm(train_loader, desc=f"Epoch {epoch} Batches", unit="batch")):
-        tr_img, tr_label = train_data_list
+        tr_img, tr_label, tr_color = _unpack_batch(train_data_list)
         tr_img = tr_img.to(device)
         tr_label = tr_label.to(device)
+        if tr_color is not None:
+            tr_color = tr_color.to(device)
 
         #debug_train_data((tr_img, tr_label), "Original")
+        # Rebuilt as a 2-tuple on purpose: the colour target is metric-only and
+        # must not reach the model (nor DataParallel's scatter).
         train_data_list = (tr_img, tr_label)
 
         if imp_loader != None:
@@ -320,8 +391,14 @@ def train(train_loader, model, dis_opt, gen_opt, rec_opt, epoch, test_loader, ru
                 base_model = model.module if isinstance(model, nn.DataParallel) else model
                 recon = base_model.gen(tr_img, tr_label)
                 batch_mse = float(((recon - tr_img) ** 2).mean().item())
-            loss_history.append(batch_mse)
-            wandb.log({"curve/train_mse": batch_mse, "images_seen": images_seen})
+                # Same reconstruction, measured against the true colour image.
+                batch_mse_color = (_color_se_sum(recon, tr_color) / tr_color.numel()
+                                   if tr_color is not None else None)
+            loss_history.append(batch_mse)   # the loss curve stays the grayscale one
+            mse_payload = {"curve/train_mse": batch_mse, "images_seen": images_seen}
+            if batch_mse_color is not None:
+                mse_payload["curve/train_mse_color"] = batch_mse_color
+            wandb.log(mse_payload)
 
         '''if i in (0, 20):
             wandb.log({
@@ -419,14 +496,18 @@ def main(train_loader, test_loader, lr_dis, lr_gen, lr_rec, imp_loader=None, run
         "architecture": "GAN",
         "run_id": run_id,
         "loss_type": loss_type,
+        "target_classes": load_data.TARGET_CLASSES,
     }
-    wandb.init(project="[TESTS]snn-handwriting-off-raster", config=run_config)
+    wandb.init(project="[SNN_OFFLINE_JOURNAL_GENERATION]_GAN", config=run_config)
 
     # Log the learning curve against images-seen (not the wandb step), so it is
     # directly comparable to the SNN's curve.
     wandb.define_metric("images_seen")
     wandb.define_metric("curve/train_mse", step_metric="images_seen")
     wandb.define_metric("curve/eval_mse",  step_metric="images_seen")
+    # Same curves, measured against the ORIGINAL COLOUR images (see _color_se_sum).
+    wandb.define_metric("curve/train_mse_color", step_metric="images_seen")
+    wandb.define_metric("curve/eval_mse_color",  step_metric="images_seen")
 
     print(f"Device: {device}")
     model = ConTranModel(show_iter_num, OOV, pretrained_rec=pretrained_rec)
@@ -483,9 +564,15 @@ def main(train_loader, test_loader, lr_dis, lr_gen, lr_rec, imp_loader=None, run
         # point and the convergence signal. Logged in BOTH modes so the curve
         # always exists; only used for early stopping when enabled.
         if ((epoch + 1) % conv_eval_every) == 0:
-            eval_mse = _full_test_mse(model, test_loader, seed=conv_seed)
-            wandb.log({"curve/eval_mse": eval_mse, "images_seen": images_seen})
-            print(f"  [eval] epoch {epoch}  test recon MSE = {eval_mse:.6f}")
+            # Early stopping deliberately keeps watching the GRAYSCALE MSE; the
+            # colour one is logged next to it as a diagnostic.
+            eval_mse, eval_mse_color = _full_test_mse(model, test_loader, seed=conv_seed)
+            eval_payload = {"curve/eval_mse": eval_mse, "images_seen": images_seen}
+            if eval_mse_color is not None:
+                eval_payload["curve/eval_mse_color"] = eval_mse_color
+            wandb.log(eval_payload)
+            color_str = f"  colour MSE = {eval_mse_color:.6f}" if eval_mse_color is not None else ""
+            print(f"  [eval] epoch {epoch}  test recon MSE = {eval_mse:.6f}{color_str}")
 
             if train_until_convergence:
                 if eval_mse < best_mse - conv_min_delta:
@@ -511,8 +598,13 @@ def main(train_loader, test_loader, lr_dis, lr_gen, lr_rec, imp_loader=None, run
 
     # End-of-training analysis (loss curve, val/img_mse, per-symbol PNGs), the
     # same closing step the SNN performs.
-    analyze_and_plot(model, test_loader, DEFAULT_CONFIG["train_image_dir"],
-                     loss_history=loss_history)
+    # Per-run folder, emptied first so a previous run with the same dataset,
+    # percentage and seed leaves no stale images behind.
+    run_dir = os.path.join(DEFAULT_CONFIG["train_image_dir"],
+                           run_tag(DEFAULT_CONFIG["data_root"], DEFAULT_CONFIG["dataset_percentage"],
+                                   DEFAULT_CONFIG["dataset_subset_seed"]))
+    shutil.rmtree(run_dir, ignore_errors=True)
+    analyze_and_plot(model, test_loader, run_dir, loss_history=loss_history)
 
     # ── inference on the freshly-trained model, in the SAME wandb run ─────────
     # The run is still open here, so run_inference logs everything under
@@ -523,9 +615,14 @@ def main(train_loader, test_loader, lr_dis, lr_gen, lr_rec, imp_loader=None, run
         from generate_images import run_inference
         run_inference(
             model,
-            out_dir=os.path.join(DEFAULT_CONFIG["train_image_dir"], "inference"),
+            out_dir=os.path.join(run_dir, "inference"),
             wandb_prefix="inference",
             bg_color=DEFAULT_CONFIG["bg_color"],
+            data_root=DEFAULT_CONFIG["data_root"],
+            dataset_percentage=DEFAULT_CONFIG["dataset_percentage"],
+            dataset_subset_seed=DEFAULT_CONFIG["dataset_subset_seed"],
+            jitter_percentage=DEFAULT_CONFIG["inference_jitter_percentage"],
+            wandb_images_per_class=DEFAULT_CONFIG["inference_wandb_images_per_class"],
         )
     except Exception as e:
         print(f"[inference] skipped due to error: {e}")
@@ -608,9 +705,14 @@ def analyze_and_plot(model, test_loader, output_dir, loss_history=None):
         wandb.log({"charts/loss_curve": wandb.Image(fig_loss)})
         plt.close()
 
-    mse_all = _full_test_mse(model, test_loader, seed=DEFAULT_CONFIG["convergence_eval_seed"])
+    mse_all, mse_all_color = _full_test_mse(model, test_loader,
+                                            seed=DEFAULT_CONFIG["convergence_eval_seed"])
     print(f"Image MSE (all): {mse_all:.6f}")
-    wandb.log({"val/img_mse": mse_all})
+    final_payload = {"val/img_mse": mse_all}
+    if mse_all_color is not None:
+        print(f"Image MSE vs colour original (all): {mse_all_color:.6f}")
+        final_payload["val/img_mse_color"] = mse_all_color
+    wandb.log(final_payload)
 
     # last occurrence of each symbol in the test set, as the SNN does
     base = model.module if isinstance(model, nn.DataParallel) else model
@@ -618,7 +720,8 @@ def analyze_and_plot(model, test_loader, output_dir, loss_history=None):
     model.eval()
     best = {}
     with torch.no_grad():
-        for tr_img, tr_label in test_loader:
+        for batch in test_loader:
+            tr_img, tr_label, _ = _unpack_batch(batch)
             tr_img = tr_img.to(device)
             tr_label = tr_label.to(device)
             gen_batch = base.gen(tr_img, tr_label)

@@ -61,7 +61,7 @@ class ConTranModel(nn.Module):
             self.eval()
 
     def forward(self, train_data_list, epoch, mode, cer_func=None, final_folder=None,
-                n_jitter=0, jitter_noise_std=None, latent_folder=None, jitter_folder=None,
+                jitter_counts=None, jitter_noise_std=None, latent_folder=None, jitter_folder=None,
                 authors=None, author_folder=None):
         tr_img, tr_label = train_data_list
         noisy_img = tr_img.clone()
@@ -288,16 +288,21 @@ class ConTranModel(nn.Module):
                                               authors=authors, author_folder=author_folder)
 
                 # ── SNN-style new-sample generation (SNN inference step 2) ────
-                # Save each sample's CLEAN latent, then decode n_jitter fresh-noise
-                # variants from it (the GAN analogue of the SNN's spike jitter).
-                if n_jitter and n_jitter > 0:
+                # Save each sample's CLEAN latent, then decode fresh-noise variants
+                # from it (the GAN analogue of the SNN's spike jitter).
+                # `jitter_counts` holds how many jitters each sample of the batch
+                # gets; pass j decodes the whole batch but only writes the samples
+                # with more than j jitters.
+                n_jitter = max(jitter_counts) if jitter_counts is not None and len(jitter_counts) else 0
+                if n_jitter > 0:
                     feat_xs = self.gen(noisy_img, tr_label, return_encoding=True)
                     save_latents(feat_xs, tr_label, inst_ids, latent_folder)
                     for j in range(n_jitter):
                         jit_img = self.gen.generate_from_latent(
                             feat_xs, tr_label, noise_std=jitter_noise_std)
                         write_jitter_images(jit_img, tr_label, inst_ids, jitter_folder, j,
-                                            authors=authors, author_folder=author_folder)
+                                            authors=authors, author_folder=author_folder,
+                                            keep=[c > j for c in jitter_counts])
 
                 self.iter_num += 1
                 l_dis = self.dis.calc_gen_loss(generated_img)

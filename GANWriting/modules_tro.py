@@ -199,18 +199,31 @@ def _wandb_img(arr, caption):
 # ("inference/training_instances", "inference/new_jitter"). The GAN generates
 # batch by batch, so we accumulate here and flush once at the end.
 _WANDB_IMAGE_BUFFERS = {}
+_WANDB_IMAGES_PER_CLASS = {}   # (category, class) -> #images buffered so far
+_WANDB_MAX_PER_CLASS = None    # cap per (category, class); None -> no cap
 _INSTANCE_COUNTER = {}
 
 
-def reset_image_buffers():
+def reset_image_buffers(max_per_class=None):
     """Call before an inference pass: clears accumulated wandb images and the
-    per-class instance numbering used for filenames."""
+    per-class instance numbering used for filenames. `max_per_class` caps how
+    many images of each class go to wandb per category (None -> all); every
+    image is still saved to disk."""
+    global _WANDB_MAX_PER_CLASS
     _WANDB_IMAGE_BUFFERS.clear()
+    _WANDB_IMAGES_PER_CLASS.clear()
     _INSTANCE_COUNTER.clear()
+    _WANDB_MAX_PER_CLASS = max_per_class
 
 
-def _buffer_image(category, img):
-    _WANDB_IMAGE_BUFFERS.setdefault(category, []).append(img)
+def _buffer_image(category, cls, arr, caption):
+    """Buffer one image for wandb unless its class already hit the cap. The
+    wandb.Image is only built when kept, so capped images cost no memory."""
+    n = _WANDB_IMAGES_PER_CLASS.get((category, cls), 0)
+    if _WANDB_MAX_PER_CLASS is not None and n >= _WANDB_MAX_PER_CLASS:
+        return
+    _WANDB_IMAGES_PER_CLASS[(category, cls)] = n + 1
+    _WANDB_IMAGE_BUFFERS.setdefault(category, []).append(_wandb_img(arr, caption))
 
 
 def log_image_buffers(prefix="inference"):
@@ -376,7 +389,7 @@ def write_final_images(xg, pred_label, gt_img, gt_label, title, final_folder,
         cls = _class_str(gt_label_np[i])
         g = xg[i].squeeze()   # already in [0, 1] from the generator's normalisation
         save_gray(g, os.path.join(final_folder, cls, f"inst_{n}.png"))
-        _buffer_image("training_instances", _wandb_img(g, f"{cls}/inst_{n}"))
+        _buffer_image("training_instances", cls, g, f"{cls}/inst_{n}")
         if author_folder is not None and authors is not None:
             save_gray(g, os.path.join(author_folder, authors[i], cls, f"inst_{n}.png"))
 
@@ -406,7 +419,7 @@ def save_latents(feat_xs, gt_label, inst_ids, latent_folder):
 
 
 def write_jitter_images(xg, gt_label, inst_ids, jitter_folder, jitter_idx,
-                        authors=None, author_folder=None):
+                        authors=None, author_folder=None, keep=None):
     """Write fresh-jitter instances exactly as the SNN's inference step 2 does:
     <jitter_folder>/<class>/inst_<n>_new_jitter_<j>.png via save_gray on a fixed
     [0, 1] scale, buffered for a single wandb log under 'new_jitter' with caption
@@ -416,16 +429,21 @@ def write_jitter_images(xg, gt_label, inst_ids, jitter_folder, jitter_idx,
     When `author_folder` and `authors` are given, each jitter is ALSO written to
     <author_folder>/<author>/<class>/inst_<n>_new_jitter_<j>.png, so the straight
     generations and the jitters share the same <author_name>/<symbol_name>
-    folder as the input dataset. The wandb logging is unaffected."""
+    folder as the input dataset. The wandb logging is unaffected.
+
+    `keep` (per-sample bools, aligned to the batch) restricts the write to the
+    samples that should get this jitter; None writes every sample."""
     if jitter_folder is None:
         return
     xg_np = xg.detach().cpu().numpy()
     gt_label_np = gt_label.detach().cpu().numpy()
     for i, n in enumerate(inst_ids):
+        if keep is not None and not keep[i]:
+            continue
         cls = _class_str(gt_label_np[i])
         g = xg_np[i].squeeze()   # already in [0, 1] from the generator's normalisation
         save_gray(g, os.path.join(jitter_folder, cls, f"inst_{n}_new_jitter_{jitter_idx}.png"))
-        _buffer_image("new_jitter", _wandb_img(g, f"{cls}/inst_{n} #{jitter_idx}"))
+        _buffer_image("new_jitter", cls, g, f"{cls}/inst_{n} #{jitter_idx}")
         if author_folder is not None and authors is not None:
             save_gray(g, os.path.join(author_folder, authors[i],
                                       cls, f"inst_{n}_new_jitter_{jitter_idx}.png"))
